@@ -374,7 +374,9 @@ void setup() {
     config.frame_size = FRAMESIZE_QVGA; // Low latency, smooth driving size
     config.jpeg_quality = 10; // High clarity (lower value means higher quality)
     config.fb_count = 2; // Double buffering enables high framerates
-    Serial.println("PSRAM detected! Configuring double-buffering & high-quality QVGA.");
+    config.fb_location = CAMERA_FB_IN_PSRAM; // Explicitly allocate frame buffer in PSRAM
+    config.grab_mode = CAMERA_GRAB_LATEST;   // Always grab the latest frame for lowest latency
+    Serial.println("PSRAM detected! Configuring double-buffering, PSRAM buffer allocation, and CAMERA_GRAB_LATEST.");
   } else {
     config.frame_size = FRAMESIZE_QVGA;
     config.jpeg_quality = 14; // Lower quality to prevent out-of-memory errors
