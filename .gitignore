@@ -1,0 +1,17 @@
+# Dependency folders
+node_modules/
+frontend/node_modules/
+
+# PlatformIO build outputs
+.pio/
+.clang_complete
+.gcc-flags.json
+.ipch/
+
+# React build outputs
+frontend/dist/
+
+# System and logs
+*.log
+.DS_Store
+Thumbs.db

@@ -1,0 +1,391 @@
+/* Modern Dark HUD Theme - Robot Tank Control Panel */
+
+:root {
+  --font-display: 'Outfit', -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+  --font-mono: 'JetBrains Mono', monospace;
+
+  /* Harmonious Cyber Palette */
+  --bg-main: #0a0e14;
+  --bg-card: rgba(18, 26, 38, 0.65);
+  --border-card: rgba(0, 242, 254, 0.15);
+  --color-primary: #00f2fe; /* Cyber Cyan */
+  --color-accent: #4facfe; /* Neon Blue */
+  --color-warning: #f7b733; /* Neon Amber */
+  --color-danger: #ff4e50; /* Cyber Red */
+  --color-success: #00ff87; /* Lime Green */
+  --text-main: #f0f4f8;
+  --text-muted: #8fa0b5;
+  --text-glow: rgba(0, 242, 254, 0.4);
+  --shadow-glow: 0 0 15px rgba(0, 242, 254, 0.25);
+  --shadow-warning: 0 0 15px rgba(247, 183, 51, 0.25);
+}
+
+* {
+  box-sizing: border-box;
+  margin: 0;
+  padding: 0;
+}
+
+body {
+  background-color: var(--bg-main);
+  background-image: 
+    radial-gradient(at 0% 0%, rgba(15, 76, 129, 0.2) 0px, transparent 50%),
+    radial-gradient(at 100% 100%, rgba(0, 242, 254, 0.05) 0px, transparent 50%),
+    linear-gradient(rgba(18, 16, 16, 0) 50%, rgba(0, 0, 0, 0.25) 50%), 
+    linear-gradient(90deg, rgba(255, 0, 0, 0.06), rgba(0, 255, 0, 0.02), rgba(0, 0, 255, 0.06));
+  background-size: 100% 100%, 100% 100%, 100% 4px, 6px 100%; /* CRT/Scanline style pattern */
+  color: var(--text-main);
+  font-family: var(--font-display);
+  min-height: 100vh;
+  overflow-x: hidden;
+  display: flex;
+  flex-direction: column;
+}
+
+/* Glassmorphism utility card */
+.glass-panel {
+  background: var(--bg-card);
+  backdrop-filter: blur(12px);
+  -webkit-backdrop-filter: blur(12px);
+  border: 1px solid var(--border-card);
+  border-radius: 12px;
+  box-shadow: 0 8px 32px 0 rgba(0, 0, 0, 0.37);
+  transition: all 0.3s cubic-bezier(0.25, 0.8, 0.25, 1);
+}
+
+.glass-panel:hover {
+  border-color: rgba(0, 242, 254, 0.3);
+  box-shadow: var(--shadow-glow);
+}
+
+/* Main Layout Grid */
+.dashboard {
+  max-width: 1400px;
+  width: 100%;
+  margin: 0 auto;
+  padding: 20px;
+  display: grid;
+  grid-template-columns: 1fr 360px;
+  gap: 20px;
+  flex-grow: 1;
+}
+
+@media (max-width: 968px) {
+  .dashboard {
+    grid-template-columns: 1fr;
+  }
+}
+
+/* Header UI */
+header {
+  background: rgba(10, 14, 20, 0.8);
+  border-bottom: 1px solid rgba(0, 242, 254, 0.2);
+  padding: 15px 30px;
+  backdrop-filter: blur(8px);
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+}
+
+.logo-container {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+}
+
+.logo-icon {
+  font-size: 2rem;
+  animation: float 3s ease-in-out infinite;
+}
+
+h1 {
+  font-size: 1.5rem;
+  font-weight: 800;
+  text-transform: uppercase;
+  letter-spacing: 2px;
+  background: linear-gradient(to right, var(--color-primary), var(--color-accent));
+  -webkit-background-clip: text;
+  -webkit-text-fill-color: transparent;
+  text-shadow: 0 0 10px rgba(0, 242, 254, 0.1);
+}
+
+.sys-info {
+  display: flex;
+  gap: 20px;
+  font-family: var(--font-mono);
+  font-size: 0.85rem;
+}
+
+.info-tag {
+  background: rgba(0, 242, 254, 0.08);
+  padding: 4px 12px;
+  border-radius: 4px;
+  border: 1px solid rgba(0, 242, 254, 0.2);
+}
+
+/* Stream view container */
+.feed-container {
+  display: flex;
+  flex-direction: column;
+  height: 520px;
+  position: relative;
+  overflow: hidden;
+}
+
+.feed-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  padding: 15px 20px;
+  border-bottom: 1px solid rgba(0, 242, 254, 0.1);
+}
+
+.feed-title {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-weight: 600;
+  text-transform: uppercase;
+  font-size: 0.9rem;
+  letter-spacing: 1px;
+}
+
+.feed-title-dot {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: var(--color-success);
+  box-shadow: 0 0 8px var(--color-success);
+  animation: pulse 1.5s infinite;
+}
+
+.feed-body {
+  flex-grow: 1;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: #05070a;
+  position: relative;
+}
+
+.mjpeg-stream {
+  width: 100%;
+  height: 100%;
+  object-fit: contain;
+  border-bottom-left-radius: 12px;
+  border-bottom-right-radius: 12px;
+}
+
+/* Warning Screen Overlay (Not on verified safe network) */
+.warning-screen {
+  width: 100%;
+  height: 100%;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  padding: 40px;
+  text-align: center;
+  background: radial-gradient(circle, rgba(255, 78, 80, 0.15) 0%, #05070a 100%);
+  border-radius: 11px;
+  animation: red-alert 2s infinite alternate;
+}
+
+.warning-icon {
+  font-size: 4rem;
+  color: var(--color-danger);
+  margin-bottom: 15px;
+  filter: drop-shadow(0 0 10px rgba(255, 78, 80, 0.5));
+  animation: flash 1s infinite;
+}
+
+.warning-title {
+  font-size: 1.6rem;
+  font-weight: 800;
+  color: var(--color-danger);
+  text-shadow: 0 0 10px rgba(255, 78, 80, 0.3);
+  text-transform: uppercase;
+  margin-bottom: 10px;
+  letter-spacing: 1.5px;
+}
+
+.warning-desc {
+  font-size: 0.95rem;
+  color: var(--text-muted);
+  max-width: 420px;
+  line-height: 1.5;
+  font-family: var(--font-mono);
+}
+
+/* Right Control Panel */
+.panel-section {
+  padding: 20px;
+  display: flex;
+  flex-direction: column;
+  gap: 20px;
+}
+
+.section-title {
+  font-size: 0.95rem;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 1px;
+  color: var(--color-accent);
+  border-bottom: 1px solid rgba(0, 242, 254, 0.1);
+  padding-bottom: 8px;
+}
+
+/* Telemetry Stats Grid */
+.telemetry-grid {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 12px;
+}
+
+.stat-box {
+  background: rgba(0, 0, 0, 0.2);
+  border: 1px solid rgba(0, 242, 254, 0.05);
+  padding: 10px 12px;
+  border-radius: 6px;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.stat-lbl {
+  font-size: 0.75rem;
+  color: var(--text-muted);
+  text-transform: uppercase;
+  font-family: var(--font-display);
+}
+
+.stat-val {
+  font-family: var(--font-mono);
+  font-size: 0.95rem;
+  font-weight: 600;
+  color: var(--text-main);
+}
+
+.stat-val.active {
+  color: var(--color-primary);
+  text-shadow: 0 0 5px rgba(0, 242, 254, 0.2);
+}
+
+.stat-val.warning {
+  color: var(--color-warning);
+}
+
+.stat-val.danger {
+  color: var(--color-danger);
+}
+
+.stat-val.success {
+  color: var(--color-success);
+}
+
+/* Robot Tank Dashboard controls */
+.controls-layout {
+  display: flex;
+  flex-direction: column;
+  gap: 15px;
+}
+
+.wasd-keys {
+  display: grid;
+  grid-template-columns: repeat(3, 50px);
+  grid-template-rows: repeat(2, 50px);
+  gap: 8px;
+  justify-content: center;
+  margin: 10px 0;
+}
+
+.key {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: rgba(0, 0, 0, 0.3);
+  border: 1px solid rgba(0, 242, 254, 0.2);
+  border-radius: 6px;
+  font-family: var(--font-mono);
+  font-weight: 700;
+  font-size: 1.1rem;
+  color: var(--text-muted);
+  transition: all 0.1s ease;
+  user-select: none;
+}
+
+.key.w-key {
+  grid-column: 2;
+}
+
+.key.active {
+  background: rgba(0, 242, 254, 0.2);
+  border-color: var(--color-primary);
+  color: var(--color-primary);
+  box-shadow: var(--shadow-glow);
+  transform: scale(0.95);
+}
+
+/* Joystick simulation */
+.joystick-area {
+  height: 140px;
+  background: rgba(0, 0, 0, 0.4);
+  border-radius: 50%;
+  width: 140px;
+  margin: 0 auto;
+  border: 2px dashed rgba(0, 242, 254, 0.15);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  position: relative;
+}
+
+.joystick-pad {
+  width: 60px;
+  height: 60px;
+  border-radius: 50%;
+  background: radial-gradient(circle, var(--color-accent) 0%, var(--bg-main) 100%);
+  border: 2px solid var(--color-primary);
+  box-shadow: var(--shadow-glow);
+  cursor: grab;
+  position: absolute;
+  transition: all 0.2s ease-out;
+}
+
+.joystick-pad:active {
+  cursor: grabbing;
+}
+
+/* Footer style copyright */
+footer {
+  margin-top: auto;
+  text-align: center;
+  padding: 20px;
+  color: var(--text-muted);
+  font-size: 0.75rem;
+  font-family: var(--font-mono);
+  border-top: 1px solid rgba(255, 255, 255, 0.03);
+}
+
+/* Animations */
+@keyframes float {
+  0% { transform: translateY(0px); }
+  50% { transform: translateY(-4px); }
+  100% { transform: translateY(0px); }
+}
+
+@keyframes pulse {
+  0% { transform: scale(1); opacity: 0.6; }
+  50% { transform: scale(1.2); opacity: 1; }
+  100% { transform: scale(1); opacity: 0.6; }
+}
+
+@keyframes flash {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0.4; }
+}
+
+@keyframes red-alert {
+  0% { box-shadow: inset 0 0 10px rgba(255, 78, 80, 0.05); }
+  100% { box-shadow: inset 0 0 25px rgba(255, 78, 80, 0.15); }
+}
