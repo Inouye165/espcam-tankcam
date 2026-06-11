@@ -77,16 +77,40 @@ The entire system operates strictly on the two verified SSIDs. Both nodes perfor
    ```
 2. Reboot the module to begin broadcasting UDP beacons.
 
-### B. Launching the Backend Server & Dashboard
+### B. Launching the Backend Server & Dashboard (Production Mode)
 
-1. Ensure your Host PC is connected to `Pumpkinpie` or `Dobby`.
-2. Move into the `server/` directory:
+To run the unified server that handles the camera proxies and serves the React cockpit dashboard:
+
+1. **Verify Network**: Ensure your Host PC is connected to one of the verified Wi-Fi networks (`Pumpkinpie` or `Dobby`).
+2. **Navigate to the Server Directory**: Open your terminal and change your directory to the `server/` folder:
    ```bash
    cd server
+   ```
+3. **Install Dependencies** (only required the first time):
+   ```bash
    npm install
+   ```
+4. **Start the Server**: Run the start script from within the `server/` directory:
+   ```bash
    npm start
    ```
-3. Open a browser and navigate to: **`http://localhost:5000`**
+   *This starts the backend server on HTTP port 5000, begins listening for UDP beacons on port 3000, and automatically hosts the compiled React console UI.*
+5. **Access the Cockpit**: Open your web browser and go to: **`http://localhost:5000`**
+
+### C. Running in Development Mode (Optional)
+
+If you are modifying the frontend React code and want hot-reloading:
+
+1. **Start the Backend**: Run `npm start` from within the `server/` directory as described above.
+2. **Navigate to the Frontend Directory**: Open a second terminal window and go to the `frontend/` folder:
+   ```bash
+   cd frontend
+   ```
+3. **Start the Dev Server**: Run the development script from within the `frontend/` directory:
+   ```bash
+   npm run dev
+   ```
+4. **Access the Dev Console**: Open your web browser and go to: **`http://localhost:5173`** *(Vite will proxy API requests to the backend server running on port 5000)*.
 
 ---
 
