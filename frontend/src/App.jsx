@@ -4,9 +4,10 @@ function App() {
   const [status, setStatus] = useState({
     isHostSecure: false,
     hostSsid: 'Checking...',
-    cameraConnected: false,
-    cameraIp: null,
-    cameraSsid: null
+    cameras: {
+      esp32cam: { connected: false, ip: null, ssid: null },
+      'espcam-seeed': { connected: false, ip: null, ssid: null }
+    }
   });
 
   const [activeKeys, setActiveKeys] = useState({
@@ -19,7 +20,10 @@ function App() {
   const [joystickPos, setJoystickPos] = useState({ x: 0, y: 0 });
   const [isDragging, setIsDragging] = useState(false);
   const [systemTime, setSystemTime] = useState(new Date().toLocaleTimeString());
-  const [flashOn, setFlashOn] = useState(false);
+  const [flashStates, setFlashStates] = useState({
+    esp32cam: false,
+    'espcam-seeed': false
+  });
   const joystickRef = useRef(null);
 
   // Poll server status
@@ -30,10 +34,16 @@ function App() {
         if (res.ok) {
           const data = await res.json();
           setStatus(data);
-          // Auto reset flash state if camera disconnects
-          if (!data.cameraConnected) {
-            setFlashOn(false);
-          }
+          // Auto reset flash states if a camera disconnects
+          setFlashStates(prev => {
+            const next = { ...prev };
+            Object.keys(data.cameras || {}).forEach(name => {
+              if (!data.cameras[name].connected) {
+                next[name] = false;
+              }
+            });
+            return next;
+          });
         } else {
           setStatus(prev => ({ ...prev, isHostSecure: false, hostSsid: 'Unverified' }));
         }
@@ -43,7 +53,10 @@ function App() {
           ...prev,
           isHostSecure: false,
           hostSsid: 'Server Offline',
-          cameraConnected: false
+          cameras: {
+            esp32cam: { connected: false, ip: null, ssid: null },
+            'espcam-seeed': { connected: false, ip: null, ssid: null }
+          }
         }));
       }
     };
@@ -118,19 +131,20 @@ function App() {
   };
 
   // Toggle Camera Flash LED
-  const toggleFlash = async () => {
-    if (!status.cameraConnected || !status.isHostSecure) return;
+  const toggleFlash = async (deviceName) => {
+    const cam = status.cameras?.[deviceName];
+    if (!cam || !cam.connected || !status.isHostSecure) return;
     
-    const nextState = !flashOn;
+    const nextState = !flashStates[deviceName];
     try {
-      const res = await fetch(`/api/control?var=flash&val=${nextState ? 1 : 0}`);
+      const res = await fetch(`/api/control?device=${deviceName}&var=flash&val=${nextState ? 1 : 0}`);
       if (res.ok) {
-        setFlashOn(nextState);
+        setFlashStates(prev => ({ ...prev, [deviceName]: nextState }));
       } else {
-        console.error('Failed to toggle camera flash');
+        console.error(`Failed to toggle camera flash for ${deviceName}`);
       }
     } catch (err) {
-      console.error('Error toggling flash:', err);
+      console.error(`Error toggling flash for ${deviceName}:`, err);
     }
   };
 
@@ -152,49 +166,66 @@ function App() {
       </header>
 
       <main className="dashboard">
-        {/* Left Video Stream Area */}
-        <section className="glass-panel feed-container">
-          <div className="feed-header">
-            <div className="feed-title">
-              {status.cameraConnected && status.isHostSecure && <span className="feed-title-dot" />}
-              <span>Live Tank Feed</span>
-            </div>
-            {status.cameraConnected && status.isHostSecure && (
-              <div style={{ fontFamily: 'var(--font-mono)', fontSize: '0.8rem', color: 'var(--color-primary)' }}>
-                IP: {status.cameraIp} | {status.cameraSsid}
-              </div>
-            )}
-          </div>
+        {/* Left Video Stream Area (Multi-feed Grid) */}
+        <section className="feeds-grid">
+          {Object.entries(status.cameras || {}).map(([deviceName, cam]) => {
+            const displayName = deviceName === 'esp32cam' ? 'ESP32-CAM (AI-Thinker)' : 'espcam-seeed (XIAO)';
+            return (
+              <div key={deviceName} className="glass-panel feed-container">
+                <div className="feed-header">
+                  <div className="feed-title">
+                    {cam.connected && status.isHostSecure && <span className="feed-title-dot" />}
+                    <span>{displayName}</span>
+                  </div>
+                  {cam.connected && status.isHostSecure && (
+                    <div style={{ fontFamily: 'var(--font-mono)', fontSize: '0.8rem', color: 'var(--color-primary)' }}>
+                      IP: {cam.ip} | {cam.ssid}
+                    </div>
+                  )}
+                </div>
 
-          <div className="feed-body">
-            {!status.isHostSecure ? (
-              <div className="warning-screen">
-                <div className="warning-icon">⚠</div>
-                <h2 className="warning-title">Not on verified safe network</h2>
-                <p className="warning-desc">
-                  Connection blocked. Current network SSID <strong style={{color: 'var(--color-warning)'}}>'{status.hostSsid}'</strong> is unverified.
-                  The system will only operate when connected to Pumpkinpie or Dobby.
-                </p>
-              </div>
-            ) : !status.cameraConnected ? (
-              <div style={{ textAlign: 'center', fontFamily: 'var(--font-mono)' }}>
-                <div className="warning-icon" style={{ color: 'var(--color-accent)', animation: 'pulse 1.5s infinite' }}>📡</div>
-                <div style={{ textTransform: 'uppercase', letterSpacing: '2px', fontWeight: 'bold' }}>Waiting for ESP32-CAM...</div>
-                <div style={{ color: 'var(--text-muted)', fontSize: '0.85rem', marginTop: '5px' }}>
-                  Make sure ESP32 is on, and broadcasting UDP beacons on COM5 SSID.
+                <div className="feed-body">
+                  {!status.isHostSecure ? (
+                    <div className="warning-screen">
+                      <div className="warning-icon">⚠</div>
+                      <h2 className="warning-title">Not on verified safe network</h2>
+                      <p className="warning-desc">
+                        Connection blocked. Current network SSID <strong style={{color: 'var(--color-warning)'}}>'{status.hostSsid}'</strong> is unverified.
+                        The system will only operate when connected to Pumpkinpie or Dobby.
+                      </p>
+                    </div>
+                  ) : !cam.connected ? (
+                    <div style={{ textAlign: 'center', fontFamily: 'var(--font-mono)' }}>
+                      <div className="warning-icon" style={{ color: 'var(--color-accent)', animation: 'pulse 1.5s infinite' }}>📡</div>
+                      <div style={{ textTransform: 'uppercase', letterSpacing: '2px', fontWeight: 'bold' }}>Waiting for {deviceName}...</div>
+                      <div style={{ color: 'var(--text-muted)', fontSize: '0.85rem', marginTop: '5px' }}>
+                        Make sure the device is powered, connected to Pumpkinpie or Dobby, and sending UDP beacons.
+                      </div>
+                    </div>
+                  ) : (
+                    <img
+                      src={`/api/stream?device=${deviceName}`}
+                      alt={`${displayName} Live Feed`}
+                      className="mjpeg-stream"
+                      onError={(e) => {
+                        console.error(`MJPEG Stream error loading for ${deviceName}`);
+                      }}
+                    />
+                  )}
+                </div>
+
+                <div className="feed-controls">
+                  <button
+                    onClick={() => toggleFlash(deviceName)}
+                    disabled={!cam.connected || !status.isHostSecure}
+                    className={`flash-btn ${flashStates[deviceName] ? 'active' : 'inactive'}`}
+                  >
+                    🔦 Flash Light: {flashStates[deviceName] ? 'ON' : 'OFF'}
+                  </button>
                 </div>
               </div>
-            ) : (
-              <img
-                src="/api/stream"
-                alt="ESP32-CAM Live Feed"
-                className="mjpeg-stream"
-                onError={(e) => {
-                  console.error('MJPEG Stream error loading');
-                }}
-              />
-            )}
-          </div>
+            );
+          })}
         </section>
 
         {/* Right Dashboard Panels */}
@@ -216,21 +247,27 @@ function App() {
                 </span>
               </div>
               <div className="stat-box">
-                <span className="stat-lbl">Camera Link</span>
-                <span className={`stat-val ${status.cameraConnected ? 'success' : 'warning'}`}>
-                  {status.cameraConnected ? 'Connected' : 'Offline'}
+                <span className="stat-lbl">esp32cam Link</span>
+                <span className={`stat-val ${status.cameras?.esp32cam?.connected ? 'success' : 'warning'}`}>
+                  {status.cameras?.esp32cam?.connected ? 'Connected' : 'Offline'}
                 </span>
               </div>
               <div className="stat-box">
-                <span className="stat-lbl">Camera SSID</span>
-                <span className="stat-val">
-                  {status.cameraSsid || 'N/A'}
+                <span className="stat-lbl">seeed Link</span>
+                <span className={`stat-val ${status.cameras?.['espcam-seeed']?.connected ? 'success' : 'warning'}`}>
+                  {status.cameras?.['espcam-seeed']?.connected ? 'Connected' : 'Offline'}
                 </span>
               </div>
               <div className="stat-box" style={{ gridColumn: 'span 2' }}>
-                <span className="stat-lbl">Camera Stream Link</span>
+                <span className="stat-lbl">esp32cam IP</span>
                 <span className="stat-val active" style={{ fontSize: '0.8rem' }}>
-                  {status.cameraConnected ? `http://${status.cameraIp}/stream` : 'N/A'}
+                  {status.cameras?.esp32cam?.connected ? status.cameras.esp32cam.ip : 'N/A'}
+                </span>
+              </div>
+              <div className="stat-box" style={{ gridColumn: 'span 2' }}>
+                <span className="stat-lbl">espcam-seeed IP</span>
+                <span className="stat-val active" style={{ fontSize: '0.8rem' }}>
+                  {status.cameras?.['espcam-seeed']?.connected ? status.cameras['espcam-seeed'].ip : 'N/A'}
                 </span>
               </div>
             </div>
@@ -274,32 +311,7 @@ function App() {
                 )}
               </div>
 
-              {/* Onboard Flash LED Control Toggle */}
-              <div style={{ marginTop: '15px' }}>
-                <button
-                  onClick={toggleFlash}
-                  disabled={!status.cameraConnected || !status.isHostSecure}
-                  style={{
-                    width: '100%',
-                    padding: '12px',
-                    fontFamily: 'var(--font-mono)',
-                    fontSize: '0.85rem',
-                    textTransform: 'uppercase',
-                    letterSpacing: '1px',
-                    background: flashOn ? 'rgba(0, 242, 254, 0.2)' : 'rgba(0, 0, 0, 0.3)',
-                    border: flashOn ? '1px solid var(--color-primary)' : '1px solid rgba(0, 242, 254, 0.2)',
-                    borderRadius: '6px',
-                    color: flashOn ? 'var(--color-primary)' : 'var(--text-muted)',
-                    cursor: (!status.cameraConnected || !status.isHostSecure) ? 'not-allowed' : 'pointer',
-                    boxShadow: flashOn ? 'var(--shadow-glow)' : 'none',
-                    transition: 'all 0.2s ease',
-                    fontWeight: 'bold',
-                    opacity: (!status.cameraConnected || !status.isHostSecure) ? 0.4 : 1
-                  }}
-                >
-                  🔦 Flash Light: {flashOn ? 'ON' : 'OFF'}
-                </button>
-              </div>
+
             </div>
           </div>
         </aside>

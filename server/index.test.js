@@ -19,7 +19,11 @@ describe('ESP32-CAM Server Backend Regression Tests', () => {
       hostSsid: 'Pumpkinpie',
       cameraConnected: false,
       cameraIp: null,
-      cameraSsid: null
+      cameraSsid: null,
+      cameras: {
+        esp32cam: { connected: false, ip: null, ssid: null },
+        'espcam-seeed': { connected: false, ip: null, ssid: null }
+      }
     });
   });
 
@@ -34,7 +38,11 @@ describe('ESP32-CAM Server Backend Regression Tests', () => {
       hostSsid: 'Dobby',
       cameraConnected: true,
       cameraIp: '192.168.1.50',
-      cameraSsid: 'Dobby'
+      cameraSsid: 'Dobby',
+      cameras: {
+        esp32cam: { connected: true, ip: '192.168.1.50', ssid: 'Dobby' },
+        'espcam-seeed': { connected: false, ip: null, ssid: null }
+      }
     });
   });
 
@@ -80,6 +88,38 @@ describe('ESP32-CAM Server Backend Regression Tests', () => {
     setMockCamera('192.168.1.50', 'Pumpkinpie', 0);
 
     const response = await request(app).get('/api/control');
+    expect(response.status).toBe(400);
+    expect(response.text).toBe('Missing query parameters');
+  });
+
+  test('GET /api/status - multi-camera support verification', async () => {
+    setSSIDInfo('Pumpkinpie', true);
+    setMockCamera('192.168.1.50', 'Pumpkinpie', 0, 'esp32cam');
+    setMockCamera('192.168.1.60', 'Pumpkinpie', 0, 'espcam-seeed');
+
+    const response = await request(app).get('/api/status');
+    expect(response.status).toBe(200);
+    expect(response.body.cameras).toBeDefined();
+    expect(response.body.cameras.esp32cam.connected).toBe(true);
+    expect(response.body.cameras.esp32cam.ip).toBe('192.168.1.50');
+    expect(response.body.cameras['espcam-seeed'].connected).toBe(true);
+    expect(response.body.cameras['espcam-seeed'].ip).toBe('192.168.1.60');
+  });
+
+  test('GET /api/stream - route targeting espcam-seeed', async () => {
+    setSSIDInfo('Pumpkinpie', true);
+    setMockCamera(null, null, 10000, 'espcam-seeed');
+
+    const response = await request(app).get('/api/stream?device=espcam-seeed');
+    expect(response.status).toBe(503);
+    expect(response.text).toBe('Camera disconnected');
+  });
+
+  test('GET /api/control - target espcam-seeed with missing parameters', async () => {
+    setSSIDInfo('Pumpkinpie', true);
+    setMockCamera('192.168.1.60', 'Pumpkinpie', 0, 'espcam-seeed');
+
+    const response = await request(app).get('/api/control?device=espcam-seeed');
     expect(response.status).toBe(400);
     expect(response.text).toBe('Missing query parameters');
   });

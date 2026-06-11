@@ -1,9 +1,47 @@
-#include "esp_camera.h"
 #include <WiFi.h>
 #include <WiFiUdp.h>
 #include "esp_http_server.h"
 
-// AI-Thinker Camera Pin Definitions
+#ifndef DEVICE_NAME
+#define DEVICE_NAME "esp32cam"
+#endif
+
+// Dynamically configuration based on board type
+#if defined(ARDUINO_XIAO_ESP32S3)
+// Seeed Studio XIAO ESP32S3 Sense Pin Definitions
+#include "esp_camera.h"
+#define BOARD_NAME "XIAO_ESP32S3"
+#define PWDN_GPIO_NUM     -1
+#define RESET_GPIO_NUM    -1
+#define XCLK_GPIO_NUM     10
+#define SIOD_GPIO_NUM     40
+#define SIOC_GPIO_NUM     39
+#define Y9_GPIO_NUM       48
+#define Y8_GPIO_NUM       11
+#define Y7_GPIO_NUM       12
+#define Y6_GPIO_NUM       14
+#define Y5_GPIO_NUM       16
+#define Y4_GPIO_NUM       18
+#define Y3_GPIO_NUM       17
+#define Y2_GPIO_NUM       15
+#define VSYNC_GPIO_NUM    38
+#define HREF_GPIO_NUM     47
+#define PCLK_GPIO_NUM     13
+#define FLASH_GPIO_NUM    21 // User LED (Active LOW)
+#define FLASH_ACTIVE_LOW  true
+
+#elif defined(ARDUINO_XIAO_ESP32C3)
+// Seeed Studio XIAO ESP32C3 has no built-in camera port or PSRAM.
+// We use a mock MJPEG stream for testing WiFi and discovery.
+#define BOARD_NAME "XIAO_ESP32C3"
+#define MOCK_CAMERA       1
+#define FLASH_GPIO_NUM    -1
+#define FLASH_ACTIVE_LOW  false
+
+#else
+// Default AI-Thinker Camera Pin Definitions (esp32cam)
+#include "esp_camera.h"
+#define BOARD_NAME "ESP32CAM"
 #define PWDN_GPIO_NUM     32
 #define RESET_GPIO_NUM    -1
 #define XCLK_GPIO_NUM      0
@@ -20,9 +58,25 @@
 #define VSYNC_GPIO_NUM    25
 #define HREF_GPIO_NUM     23
 #define PCLK_GPIO_NUM     22
-
-// Flash LED pin
 #define FLASH_GPIO_NUM     4
+#define FLASH_ACTIVE_LOW  false
+#endif
+
+#ifdef MOCK_CAMERA
+// 102-byte minimal valid JPEG image
+const uint8_t mock_jpg[] = {
+  0xFF, 0xD8, 0xFF, 0xE0, 0x00, 0x10, 0x4A, 0x46, 0x49, 0x46, 0x00, 0x01, 0x01, 0x01, 0x00, 0x48, 
+  0x00, 0x48, 0x00, 0x00, 0xFF, 0xDB, 0x00, 0x43, 0x00, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 
+  0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 
+  0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 
+  0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 
+  0xC2, 0x00, 0x0B, 0x08, 0x00, 0x01, 0x00, 0x01, 0x01, 0x01, 0x11, 0x00, 0xFF, 0xC4, 0x00, 0x14, 
+  0x10, 0x01, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 
+  0x00, 0x00, 0xFF, 0xDA, 0x00, 0x08, 0x01, 0x01, 0x00, 0x01, 0x3F, 0x10, 0xFF, 0xD9
+};
+const size_t mock_jpg_len = sizeof(mock_jpg);
+#endif
+
 
 // Wi-Fi details
 const char* ssid1 = "Pumpkinpie";
@@ -51,6 +105,54 @@ bool isNetworkVerified() {
 
 // Handler for MJPEG stream
 esp_err_t stream_handler(httpd_req_t *req) {
+#ifdef MOCK_CAMERA
+  esp_err_t res = ESP_OK;
+  char * part_buf[64];
+
+  if (!isNetworkVerified()) {
+    Serial.println("Security alert: Stream request rejected on unverified network!");
+    httpd_resp_send_err(req, HTTPD_403_FORBIDDEN, "Not on verified safe network");
+    return ESP_FAIL;
+  }
+
+  res = httpd_resp_set_type(req, _STREAM_CONTENT_TYPE);
+  if (res != ESP_OK) {
+    return res;
+  }
+
+  httpd_resp_set_hdr(req, "Access-Control-Allow-Origin", "*");
+  httpd_resp_set_hdr(req, "Cache-Control", "no-cache, private, max-age=0, no-store, must-revalidate");
+  httpd_resp_set_hdr(req, "Pragma", "no-cache");
+  httpd_resp_set_hdr(req, "Expires", "0");
+
+  Serial.println("Client connected to mock stream");
+
+  while (true) {
+    if (!isNetworkVerified()) {
+      Serial.println("Security alert: Wi-Fi SSID changed to unverified network during stream!");
+      break;
+    }
+
+    if (res == ESP_OK) {
+      res = httpd_resp_send_chunk(req, _STREAM_BOUNDARY, strlen(_STREAM_BOUNDARY));
+    }
+    if (res == ESP_OK) {
+      size_t hlen = snprintf((char *)part_buf, 64, _STREAM_PART, mock_jpg_len);
+      res = httpd_resp_send_chunk(req, (const char *)part_buf, hlen);
+    }
+    if (res == ESP_OK) {
+      res = httpd_resp_send_chunk(req, (const char *)mock_jpg, mock_jpg_len);
+    }
+
+    if (res != ESP_OK) {
+      break;
+    }
+    delay(200); // ~5 frames per second
+  }
+
+  Serial.println("Client disconnected from mock stream");
+  return res;
+#else
   camera_fb_t * fb = NULL;
   esp_err_t res = ESP_OK;
   size_t _jpg_buf_len = 0;
@@ -114,6 +216,7 @@ esp_err_t stream_handler(httpd_req_t *req) {
 
   Serial.println("Client disconnected from stream");
   return res;
+#endif
 }
 
 // Handler for hardware controls (e.g. Flash LED)
@@ -146,7 +249,13 @@ esp_err_t control_handler(httpd_req_t *req) {
 
   if (strcmp(var, "flash") == 0) {
     int val_int = atoi(val);
-    digitalWrite(FLASH_GPIO_NUM, val_int ? HIGH : LOW);
+    if (FLASH_GPIO_NUM != -1) {
+      bool pinState = val_int ? HIGH : LOW;
+      if (FLASH_ACTIVE_LOW) {
+        pinState = !pinState;
+      }
+      digitalWrite(FLASH_GPIO_NUM, pinState);
+    }
     Serial.printf("Flash command received: %s\n", val_int ? "ON" : "OFF");
     
     httpd_resp_set_hdr(req, "Access-Control-Allow-Origin", "*");
@@ -185,6 +294,7 @@ void startCameraServer() {
 }
 
 void connectToWifi() {
+  WiFi.mode(WIFI_STA); // Explicitly set to station mode to disable SoftAP SSID broadcast
   Serial.println("Attempting connection to WiFi network 1: Pumpkinpie");
   WiFi.begin(ssid1, pass1);
   
@@ -230,9 +340,12 @@ void setup() {
   Serial.println();
 
   // Initialize Flash LED GPIO pin
-  pinMode(FLASH_GPIO_NUM, OUTPUT);
-  digitalWrite(FLASH_GPIO_NUM, LOW); // Flash light default to OFF
+  if (FLASH_GPIO_NUM != -1) {
+    pinMode(FLASH_GPIO_NUM, OUTPUT);
+    digitalWrite(FLASH_GPIO_NUM, FLASH_ACTIVE_LOW ? HIGH : LOW); // Default to OFF
+  }
 
+#ifndef MOCK_CAMERA
   // Camera Config
   camera_config_t config;
   config.ledc_channel = LEDC_CHANNEL_0;
@@ -282,6 +395,9 @@ void setup() {
     s->set_vflip(s, 1);
     s->set_hmirror(s, 1);
   }
+#else
+  Serial.println("Mock camera configured. Bypassing physical camera initialization.");
+#endif
 
   // Establish Wi-Fi Connection
   connectToWifi();
@@ -309,7 +425,8 @@ void loop() {
       lastBeaconTime = currentMillis;
 
       IPAddress ip = WiFi.localIP();
-      String beaconMsg = "{\"device\":\"esp32cam\",\"ip\":\"" + ip.toString() + "\",\"ssid\":\"" + WiFi.SSID() + "\"}";
+      String deviceName = String(DEVICE_NAME);
+      String beaconMsg = "{\"device\":\"" + deviceName + "\",\"ip\":\"" + ip.toString() + "\",\"ssid\":\"" + WiFi.SSID() + "\"}";
       
       IPAddress broadcastIP(255, 255, 255, 255);
       udp.beginPacket(broadcastIP, udpPort);

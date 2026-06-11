@@ -59,9 +59,10 @@ async function checkWifiSSID() {
 }
 
 // UDP Listener for ESP32-CAM Discovery
-let cameraIp = null;
-let cameraSsid = null;
-let cameraLastSeen = 0;
+const cameras = {
+  esp32cam: { ip: null, ssid: null, lastSeen: 0 },
+  'espcam-seeed': { ip: null, ssid: null, lastSeen: 0 }
+};
 const UDP_PORT = 3000;
 
 const udpServer = dgram.createSocket('udp4');
@@ -76,10 +77,11 @@ udpServer.on('error', (err) => {
 udpServer.on('message', (msg, rinfo) => {
   try {
     const data = JSON.parse(msg.toString());
-    if (data.device === 'esp32cam') {
-      cameraIp = data.ip || rinfo.address;
-      cameraSsid = data.ssid;
-      cameraLastSeen = Date.now();
+    const device = data.device;
+    if (cameras[device]) {
+      cameras[device].ip = data.ip || rinfo.address;
+      cameras[device].ssid = data.ssid;
+      cameras[device].lastSeen = Date.now();
     }
   } catch (e) {
     // Ignore invalid JSON on the UDP channel
@@ -87,21 +89,40 @@ udpServer.on('message', (msg, rinfo) => {
 });
 
 // Mock camera info for testing
-function setMockCamera(ip, ssid, lastSeenOffset = 0) {
-  cameraIp = ip;
-  cameraSsid = ssid;
-  cameraLastSeen = Date.now() - lastSeenOffset;
+function setMockCamera(ip, ssid, lastSeenOffset = 0, device = 'esp32cam') {
+  if (cameras[device]) {
+    cameras[device].ip = ip;
+    cameras[device].ssid = ssid;
+    cameras[device].lastSeen = Date.now() - lastSeenOffset;
+  }
 }
 
 // Endpoint to fetch current network and camera status
 app.get('/api/status', (req, res) => {
-  const cameraConnected = (Date.now() - cameraLastSeen) < 6000; // 6s timeout window
+  const now = Date.now();
+  const esp32camConnected = (now - cameras.esp32cam.lastSeen) < 6000;
+  const seeedConnected = (now - cameras['espcam-seeed'].lastSeen) < 6000;
+
   res.json({
     isHostSecure,
     hostSsid: currentSSID,
-    cameraConnected,
-    cameraIp: cameraConnected ? cameraIp : null,
-    cameraSsid: cameraConnected ? cameraSsid : null
+    // Backwards compatibility for single-camera tests
+    cameraConnected: esp32camConnected,
+    cameraIp: esp32camConnected ? cameras.esp32cam.ip : null,
+    cameraSsid: esp32camConnected ? cameras.esp32cam.ssid : null,
+    // Detailed multi-camera telemetry
+    cameras: {
+      esp32cam: {
+        connected: esp32camConnected,
+        ip: esp32camConnected ? cameras.esp32cam.ip : null,
+        ssid: esp32camConnected ? cameras.esp32cam.ssid : null
+      },
+      'espcam-seeed': {
+        connected: seeedConnected,
+        ip: seeedConnected ? cameras['espcam-seeed'].ip : null,
+        ssid: seeedConnected ? cameras['espcam-seeed'].ssid : null
+      }
+    }
   });
 });
 
@@ -113,13 +134,20 @@ app.get('/api/stream', (req, res) => {
     return res.status(403).send('Not on verified safe network');
   }
 
-  const cameraConnected = (Date.now() - cameraLastSeen) < 6000;
-  if (!cameraConnected || !cameraIp) {
+  const device = req.query.device || 'esp32cam';
+  const cam = cameras[device];
+
+  if (!cam) {
+    return res.status(400).send('Invalid device');
+  }
+
+  const cameraConnected = (Date.now() - cam.lastSeen) < 6000;
+  if (!cameraConnected || !cam.ip) {
     return res.status(503).send('Camera disconnected');
   }
 
-  console.log(`Proxying stream request to ESP32-CAM at ${cameraIp}`);
-  const espUrl = `http://${cameraIp}/stream`;
+  console.log(`Proxying stream request to ${device} at ${cam.ip}`);
+  const espUrl = `http://${cam.ip}/stream`;
 
   const espReq = http.get(espUrl, (espRes) => {
     // Optimization: Disable Nagle's algorithm on sockets for lowest latency
@@ -132,9 +160,9 @@ app.get('/api/stream', (req, res) => {
   });
 
   espReq.on('error', (err) => {
-    console.error('MJPEG Proxy connection error:', err.message);
+    console.error(`MJPEG Proxy connection error for ${device}:`, err.message);
     if (!res.headersSent) {
-      res.status(502).send('Bad gateway connection to ESP32-CAM');
+      res.status(502).send(`Bad gateway connection to ${device}`);
     }
   });
 
@@ -149,8 +177,15 @@ app.get('/api/control', (req, res) => {
     return res.status(403).send('Not on verified safe network');
   }
 
-  const cameraConnected = (Date.now() - cameraLastSeen) < 6000;
-  if (!cameraConnected || !cameraIp) {
+  const device = req.query.device || 'esp32cam';
+  const cam = cameras[device];
+
+  if (!cam) {
+    return res.status(400).send('Invalid device');
+  }
+
+  const cameraConnected = (Date.now() - cam.lastSeen) < 6000;
+  if (!cameraConnected || !cam.ip) {
     return res.status(503).send('Camera disconnected');
   }
 
@@ -159,16 +194,16 @@ app.get('/api/control', (req, res) => {
     return res.status(400).send('Missing query parameters');
   }
 
-  const espUrl = `http://${cameraIp}/control?var=${variable}&val=${val}`;
-  console.log(`Forwarding control command to ESP32: ${espUrl}`);
+  const espUrl = `http://${cam.ip}/control?var=${variable}&val=${val}`;
+  console.log(`Forwarding control command to ${device}: ${espUrl}`);
 
   const controlReq = http.get(espUrl, (espRes) => {
     res.status(espRes.statusCode).send('Control command forwarded');
   });
 
   controlReq.on('error', (err) => {
-    console.error('Control proxy error:', err.message);
-    res.status(502).send('Bad gateway communication with camera');
+    console.error(`Control proxy error for ${device}:`, err.message);
+    res.status(502).send(`Bad gateway communication with ${device}`);
   });
 });
 
