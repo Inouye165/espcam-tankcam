@@ -22,7 +22,8 @@ describe('ESP32-CAM Server Backend Regression Tests', () => {
       cameraSsid: null,
       cameras: {
         esp32cam: { connected: false, ip: null, ssid: null },
-        'espcam-seeed': { connected: false, ip: null, ssid: null }
+        'espcam-seeed': { connected: false, ip: null, ssid: null },
+        'waveshare-esp32': { connected: false, ip: null, ssid: null, sensors: null }
       }
     });
   });
@@ -41,10 +42,12 @@ describe('ESP32-CAM Server Backend Regression Tests', () => {
       cameraSsid: 'Dobby',
       cameras: {
         esp32cam: { connected: true, ip: '192.168.1.50', ssid: 'Dobby' },
-        'espcam-seeed': { connected: false, ip: null, ssid: null }
+        'espcam-seeed': { connected: false, ip: null, ssid: null },
+        'waveshare-esp32': { connected: false, ip: null, ssid: null, sensors: null }
       }
     });
   });
+
 
   test('GET /api/status - unverified SSID (HackNet)', async () => {
     setSSIDInfo('HackNet', false);
@@ -123,4 +126,26 @@ describe('ESP32-CAM Server Backend Regression Tests', () => {
     expect(response.status).toBe(400);
     expect(response.text).toBe('Missing query parameters');
   });
+
+  test('GET /api/status - waveshare telemetry reporting', async () => {
+    setSSIDInfo('Pumpkinpie', true);
+    const mockSensors = {
+      voltage: 12.24,
+      current: 145.2,
+      power: 1777.2,
+      temp: 31.4,
+      accel: { x: 0.1, y: -0.2, z: 9.81 },
+      gyro: { x: 1.2, y: -2.3, z: 0.5 },
+      mag: { x: 30.0, y: 15.0, z: -45.0 }
+    };
+    setMockCamera('192.168.1.70', 'Pumpkinpie', 0, 'waveshare-esp32', mockSensors);
+
+    const response = await request(app).get('/api/status');
+    expect(response.status).toBe(200);
+    expect(response.body.cameras['waveshare-esp32'].connected).toBe(true);
+    expect(response.body.cameras['waveshare-esp32'].ip).toBe('192.168.1.70');
+    expect(response.body.cameras['waveshare-esp32'].sensors).toEqual(mockSensors);
+  });
 });
+
+

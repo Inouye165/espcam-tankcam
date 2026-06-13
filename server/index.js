@@ -61,11 +61,15 @@ async function checkWifiSSID() {
 // UDP Listener for ESP32-CAM Discovery
 const cameras = {
   esp32cam: { ip: null, ssid: null, lastSeen: 0 },
-  'espcam-seeed': { ip: null, ssid: null, lastSeen: 0 }
+  'espcam-seeed': { ip: null, ssid: null, lastSeen: 0 },
+  'waveshare-esp32': { ip: null, ssid: null, lastSeen: 0, sensors: null }
 };
 const UDP_PORT = 3000;
 
 const udpServer = dgram.createSocket('udp4');
+
+// Active SSE clients for real-time telemetry streaming
+let sseClients = [];
 
 udpServer.on('error', (err) => {
   console.error(`UDP Server error:\n${err.stack}`);
@@ -82,26 +86,58 @@ udpServer.on('message', (msg, rinfo) => {
       cameras[device].ip = data.ip || rinfo.address;
       cameras[device].ssid = data.ssid;
       cameras[device].lastSeen = Date.now();
+      if (data.sensors) {
+        cameras[device].sensors = data.sensors;
+      }
+      // Broadcast incoming UDP beacon data to SSE clients in real-time
+      const payload = JSON.stringify({
+        device,
+        ip: cameras[device].ip,
+        ssid: cameras[device].ssid,
+        sensors: cameras[device].sensors
+      });
+      sseClients.forEach(client => {
+        client.write(`data: ${payload}\n\n`);
+      });
     }
   } catch (e) {
     // Ignore invalid JSON on the UDP channel
   }
 });
 
+
 // Mock camera info for testing
-function setMockCamera(ip, ssid, lastSeenOffset = 0, device = 'esp32cam') {
+function setMockCamera(ip, ssid, lastSeenOffset = 0, device = 'esp32cam', sensors = null) {
   if (cameras[device]) {
     cameras[device].ip = ip;
     cameras[device].ssid = ssid;
     cameras[device].lastSeen = Date.now() - lastSeenOffset;
+    cameras[device].sensors = sensors;
   }
 }
 
+// Server-Sent Events (SSE) stream for real-time telemetry updates
+app.get('/api/telemetry-stream', (req, res) => {
+  res.setHeader('Content-Type', 'text/event-stream');
+  res.setHeader('Cache-Control', 'no-cache');
+  res.setHeader('Connection', 'keep-alive');
+  res.setHeader('Access-Control-Allow-Origin', '*');
+  res.flushHeaders();
+
+  sseClients.push(res);
+
+  req.on('close', () => {
+    sseClients = sseClients.filter(client => client !== res);
+  });
+});
+
 // Endpoint to fetch current network and camera status
 app.get('/api/status', (req, res) => {
+
   const now = Date.now();
   const esp32camConnected = (now - cameras.esp32cam.lastSeen) < 6000;
   const seeedConnected = (now - cameras['espcam-seeed'].lastSeen) < 6000;
+  const waveshareConnected = (now - cameras['waveshare-esp32'].lastSeen) < 6000;
 
   res.json({
     isHostSecure,
@@ -121,10 +157,17 @@ app.get('/api/status', (req, res) => {
         connected: seeedConnected,
         ip: seeedConnected ? cameras['espcam-seeed'].ip : null,
         ssid: seeedConnected ? cameras['espcam-seeed'].ssid : null
+      },
+      'waveshare-esp32': {
+        connected: waveshareConnected,
+        ip: waveshareConnected ? cameras['waveshare-esp32'].ip : null,
+        ssid: waveshareConnected ? cameras['waveshare-esp32'].ssid : null,
+        sensors: waveshareConnected ? cameras['waveshare-esp32'].sensors : null
       }
     }
   });
 });
+
 
 // Proxy route for MJPEG Stream
 app.get('/api/stream', (req, res) => {

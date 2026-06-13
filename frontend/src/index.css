@@ -42,8 +42,8 @@ body {
   /* CRT/Scanline style pattern */
   color: var(--text-main);
   font-family: var(--font-display);
-  min-height: 100vh;
-  overflow-x: hidden;
+  height: 100vh;
+  overflow: hidden;
   display: flex;
   flex-direction: column;
 }
@@ -66,19 +66,38 @@ body {
 
 /* Main Layout Grid */
 .dashboard {
-  max-width: 1400px;
+  max-width: 1600px;
   width: 100%;
   margin: 0 auto;
-  padding: 20px;
+  padding: 12px 20px;
   display: grid;
-  grid-template-columns: 1fr 360px;
-  gap: 20px;
+  grid-template-columns: 1fr 340px;
+  gap: 15px;
   flex-grow: 1;
+  height: calc(100vh - 90px);
+  min-height: 0;
+  overflow: hidden;
+  box-sizing: border-box;
 }
 
-@media (max-width: 968px) {
+.dashboard aside {
+  display: flex;
+  flex-direction: column;
+  height: 100%;
+  overflow-y: auto;
+  scrollbar-width: thin;
+  scrollbar-color: rgba(0, 242, 254, 0.2) transparent;
+}
+
+@media (max-width: 1100px) {
   .dashboard {
     grid-template-columns: 1fr;
+    height: auto;
+    overflow: auto;
+  }
+  body {
+    height: auto;
+    overflow: auto;
   }
 }
 
@@ -86,11 +105,13 @@ body {
 header {
   background: rgba(10, 14, 20, 0.8);
   border-bottom: 1px solid rgba(0, 242, 254, 0.2);
-  padding: 15px 30px;
+  padding: 8px 20px;
   backdrop-filter: blur(8px);
   display: flex;
   justify-content: space-between;
   align-items: center;
+  height: 55px;
+  box-sizing: border-box;
 }
 
 .logo-container {
@@ -134,13 +155,17 @@ h1 {
 .feeds-grid {
   display: grid;
   grid-template-columns: 1fr 1fr;
-  gap: 20px;
-  align-items: start;
+  grid-template-rows: 1fr 1.25fr;
+  gap: 15px;
+  height: 100%;
+  align-items: stretch;
 }
 
 @media (max-width: 1100px) {
   .feeds-grid {
     grid-template-columns: 1fr;
+    grid-template-rows: auto;
+    height: auto;
   }
 }
 
@@ -148,7 +173,7 @@ h1 {
 .feed-container {
   display: flex;
   flex-direction: column;
-  height: auto;
+  height: 100%;
   position: relative;
   overflow: hidden;
 }
@@ -157,7 +182,7 @@ h1 {
   display: flex;
   justify-content: space-between;
   align-items: center;
-  padding: 15px 20px;
+  padding: 10px 15px;
   border-bottom: 1px solid rgba(0, 242, 254, 0.1);
 }
 
@@ -187,8 +212,7 @@ h1 {
   justify-content: center;
   background: #05070a;
   position: relative;
-  aspect-ratio: 4/3;
-  min-height: 240px;
+  overflow: hidden;
 }
 
 .feed-controls {
@@ -279,10 +303,10 @@ h1 {
 
 /* Right Control Panel */
 .panel-section {
-  padding: 20px;
+  padding: 12px 15px;
   display: flex;
   flex-direction: column;
-  gap: 20px;
+  gap: 12px;
 }
 
 .section-title {
@@ -352,11 +376,11 @@ h1 {
 
 .wasd-keys {
   display: grid;
-  grid-template-columns: repeat(3, 50px);
-  grid-template-rows: repeat(2, 50px);
-  gap: 8px;
+  grid-template-columns: repeat(3, 40px);
+  grid-template-rows: repeat(2, 40px);
+  gap: 6px;
   justify-content: center;
-  margin: 10px 0;
+  margin: 5px 0;
 }
 
 .key {
@@ -368,7 +392,7 @@ h1 {
   border-radius: 6px;
   font-family: var(--font-mono);
   font-weight: 700;
-  font-size: 1.1rem;
+  font-size: 0.95rem;
   color: var(--text-muted);
   transition: all 0.1s ease;
   user-select: none;
@@ -388,10 +412,10 @@ h1 {
 
 /* Joystick simulation */
 .joystick-area {
-  height: 140px;
+  height: 110px;
   background: rgba(0, 0, 0, 0.4);
   border-radius: 50%;
-  width: 140px;
+  width: 110px;
   margin: 0 auto;
   border: 2px dashed rgba(0, 242, 254, 0.15);
   display: flex;
@@ -401,8 +425,8 @@ h1 {
 }
 
 .joystick-pad {
-  width: 60px;
-  height: 60px;
+  width: 46px;
+  height: 46px;
   border-radius: 50%;
   background: radial-gradient(circle, var(--color-accent) 0%, var(--bg-main) 100%);
   border: 2px solid var(--color-primary);
@@ -418,13 +442,14 @@ h1 {
 
 /* Footer style copyright */
 footer {
-  margin-top: auto;
   text-align: center;
-  padding: 20px;
+  padding: 8px 20px;
   color: var(--text-muted);
   font-size: 0.75rem;
   font-family: var(--font-mono);
   border-top: 1px solid rgba(255, 255, 255, 0.03);
+  height: 35px;
+  box-sizing: border-box;
 }
 
 /* Animations */
@@ -479,4 +504,589 @@ footer {
   100% {
     box-shadow: inset 0 0 25px rgba(255, 78, 80, 0.15);
   }
+}
+
+/* Waveshare Telemetry Card Styles & 3D Tank HUD */
+.waveshare-telemetry-container {
+  display: flex;
+  width: 100%;
+  height: 100%;
+  align-items: stretch;
+}
+
+.waveshare-telemetry {
+  flex: 0.8;
+  padding: 15px;
+  display: flex;
+  flex-direction: column;
+  justify-content: space-between;
+  box-sizing: border-box;
+}
+
+.telemetry-header {
+  font-family: var(--font-mono);
+  font-size: 0.8rem;
+  letter-spacing: 2px;
+  color: var(--color-primary);
+  border-bottom: 1px solid rgba(0, 242, 254, 0.2);
+  padding-bottom: 6px;
+  text-transform: uppercase;
+}
+
+.telemetry-readout-grid {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 8px;
+  margin: 8px 0;
+  flex-grow: 1;
+  align-content: center;
+}
+
+.telemetry-readout-box {
+  background: rgba(0, 0, 0, 0.35);
+  border: 1px solid rgba(0, 242, 254, 0.1);
+  border-radius: 6px;
+  padding: 8px;
+  display: flex;
+  flex-direction: column;
+  justify-content: center;
+  align-items: center;
+  transition: all 0.2s ease;
+}
+
+.telemetry-readout-box:hover {
+  border-color: rgba(0, 242, 254, 0.3);
+  background: rgba(0, 242, 254, 0.03);
+}
+
+.telemetry-label {
+  font-size: 0.65rem;
+  color: var(--text-muted);
+  margin-bottom: 2px;
+  letter-spacing: 1px;
+}
+
+.telemetry-value {
+  font-family: var(--font-mono);
+  font-size: 1.1rem;
+  font-weight: 700;
+  text-shadow: 0 0 10px rgba(0, 242, 254, 0.2);
+}
+
+.telemetry-value.primary {
+  color: var(--color-primary);
+}
+
+.telemetry-value.accent {
+  color: var(--color-accent);
+}
+
+.telemetry-value.warning {
+  color: var(--color-warning);
+}
+
+.telemetry-value.success {
+  color: var(--color-success);
+}
+
+.telemetry-status-message {
+  font-family: var(--font-mono);
+  font-size: 0.65rem;
+  color: var(--text-muted);
+  text-align: center;
+  border-top: 1px solid rgba(255, 255, 255, 0.05);
+  padding-top: 6px;
+}
+
+/* 3D Radar Viewport */
+.tank-3d-viewport {
+  flex: 1.5;
+  background: radial-gradient(circle at center, rgba(0, 242, 254, 0.06) 0%, transparent 80%);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  perspective: 600px;
+  overflow: hidden;
+  border-right: 1px solid rgba(0, 242, 254, 0.15);
+  position: relative;
+  container-type: size;
+}
+
+.tank-3d-viewport::before {
+  content: 'IMU 3D RADAR';
+  position: absolute;
+  top: 12px;
+  left: 15px;
+  font-family: var(--font-mono);
+  font-size: 0.65rem;
+  color: rgba(0, 242, 254, 0.5);
+  letter-spacing: 1px;
+  text-shadow: 0 0 4px rgba(0, 242, 254, 0.3);
+}
+
+/* 3D Scene Container */
+.tank-3d-scene {
+  position: relative;
+  width: 0;
+  height: 0;
+  transform-style: preserve-3d;
+  transition: transform 0.05s linear;
+}
+
+/* Vector Hologram Face Styles */
+.face {
+  position: absolute;
+  background: rgba(10, 15, 25, 0.35);
+  border: 1px solid rgba(0, 242, 254, 0.4);
+  box-shadow: inset 0 0 10px rgba(0, 242, 254, 0.1), 0 0 6px rgba(0, 242, 254, 0.1);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-family: var(--font-mono);
+  font-size: 0.55rem;
+  color: var(--color-primary);
+  font-weight: bold;
+  user-select: none;
+  box-sizing: border-box;
+}
+
+/* Chassis: 70px wide (X), 100px long (Y), 24px high (Z) */
+.tank-chassis {
+  position: absolute;
+  width: 70px;
+  height: 100px;
+  transform-style: preserve-3d;
+  left: -35px;
+  top: -50px;
+}
+
+.tank-chassis .face.front {
+  width: 70px;
+  height: 24px;
+  transform: rotateX(-90deg) translateZ(50px);
+  background: rgba(0, 242, 254, 0.15);
+  border-color: var(--color-primary);
+  color: var(--color-primary);
+}
+
+.tank-chassis .face.back {
+  width: 70px;
+  height: 24px;
+  transform: rotateX(90deg) translateZ(50px);
+}
+
+.tank-chassis .face.left {
+  width: 100px;
+  height: 24px;
+  transform: rotateY(-90deg) rotateZ(90deg) translateZ(35px);
+}
+
+.tank-chassis .face.right {
+  width: 100px;
+  height: 24px;
+  transform: rotateY(90deg) rotateZ(-90deg) translateZ(35px);
+}
+
+.tank-chassis .face.top {
+  width: 70px;
+  height: 100px;
+  transform: translateZ(12px);
+  background: rgba(0, 242, 254, 0.08);
+}
+
+.tank-chassis .face.bottom {
+  width: 70px;
+  height: 100px;
+  transform: translateZ(-12px) rotateY(180deg);
+}
+
+/* Tracks: 16px wide, 110px long, 30px high */
+.tank-track {
+  position: absolute;
+  width: 16px;
+  height: 110px;
+  transform-style: preserve-3d;
+  top: -55px;
+}
+
+.left-track {
+  left: -53px;
+}
+
+.right-track {
+  left: 37px;
+}
+
+.tank-track .face {
+  border-color: var(--color-accent);
+  background: rgba(79, 172, 254, 0.05);
+  box-shadow: inset 0 0 10px rgba(79, 172, 254, 0.05);
+}
+
+.tank-track .face.front {
+  width: 16px;
+  height: 30px;
+  transform: rotateX(-90deg) translateZ(55px);
+}
+
+.tank-track .face.back {
+  width: 16px;
+  height: 30px;
+  transform: rotateX(90deg) translateZ(55px);
+}
+
+.tank-track .face.left {
+  width: 110px;
+  height: 30px;
+  transform: rotateY(-90deg) rotateZ(90deg) translateZ(8px);
+}
+
+.tank-track .face.right {
+  width: 110px;
+  height: 30px;
+  transform: rotateY(90deg) rotateZ(-90deg) translateZ(8px);
+}
+
+.tank-track .face.top {
+  width: 16px;
+  height: 110px;
+  transform: translateZ(15px);
+  background: rgba(79, 172, 254, 0.15);
+}
+
+.tank-track .face.bottom {
+  width: 16px;
+  height: 110px;
+  transform: translateZ(-15px) rotateY(180deg);
+}
+
+/* Turret: 36px wide, 46px long, 20px high */
+.tank-turret {
+  position: absolute;
+  width: 36px;
+  height: 46px;
+  transform-style: preserve-3d;
+  left: -18px;
+  top: -23px;
+  transform: translateZ(22px);
+}
+
+.tank-turret .face {
+  border-color: var(--color-warning);
+  background: rgba(247, 183, 51, 0.1);
+  box-shadow: inset 0 0 10px rgba(247, 183, 51, 0.1);
+}
+
+.tank-turret .face.front {
+  width: 36px;
+  height: 20px;
+  transform: rotateX(-90deg) translateZ(23px);
+}
+
+.tank-turret .face.back {
+  width: 36px;
+  height: 20px;
+  transform: rotateX(90deg) translateZ(23px);
+}
+
+.tank-turret .face.left {
+  width: 46px;
+  height: 20px;
+  transform: rotateY(-90deg) rotateZ(90deg) translateZ(18px);
+}
+
+.tank-turret .face.right {
+  width: 46px;
+  height: 20px;
+  transform: rotateY(90deg) rotateZ(-90deg) translateZ(18px);
+}
+
+.tank-turret .face.top {
+  width: 36px;
+  height: 46px;
+  transform: translateZ(10px);
+}
+
+.tank-turret .face.bottom {
+  width: 36px;
+  height: 46px;
+  transform: translateZ(-10px) rotateY(180deg);
+}
+
+/* Barrel: holographic laser look */
+.tank-barrel {
+  position: absolute;
+  width: 6px;
+  height: 45px;
+  background: rgba(247, 183, 51, 0.2);
+  border: 1px solid var(--color-warning);
+  box-shadow: 0 0 8px var(--color-warning);
+  left: 15px;
+  top: -25px;
+  transform: rotateX(90deg) translateZ(23px);
+  transform-origin: bottom center;
+}
+
+/* Glowing 3D Vector Direction Arrow (Green, Movement) */
+.tank-direction-arrow {
+  position: absolute;
+  width: 28px;
+  height: 60px;
+  left: -14px;
+  top: -30px;
+  background: linear-gradient(to top, rgba(0, 255, 135, 0.05) 0%, rgba(0, 255, 135, 0.8) 100%);
+  clip-path: polygon(50% 0%, 100% 45%, 70% 45%, 70% 100%, 30% 100%, 30% 45%, 0% 45%);
+  filter: drop-shadow(0 0 8px rgba(0, 255, 135, 0.6)) drop-shadow(0 0 15px rgba(0, 255, 135, 0.3));
+  pointer-events: none;
+  transform-style: preserve-3d;
+  transition: transform 0.08s linear, opacity 0.1s ease;
+}
+
+/* Facing Direction Arrow (Red, Orientation) */
+.tank-facing-arrow {
+  position: absolute;
+  width: 14px;
+  height: 80px;
+  left: -7px;
+  top: -65px; /* offset it forward so it points out from under the front */
+  background: linear-gradient(to top, rgba(255, 78, 80, 0.05) 0%, rgba(255, 78, 80, 0.9) 100%);
+  clip-path: polygon(50% 0%, 100% 25%, 65% 25%, 65% 100%, 35% 100%, 35% 25%, 0% 25%);
+  filter: drop-shadow(0 0 8px rgba(255, 78, 80, 0.7)) drop-shadow(0 0 15px rgba(255, 78, 80, 0.4));
+  pointer-events: none;
+  transform-style: preserve-3d;
+  transition: transform 0.1s ease;
+}
+
+/* Circular Compass Dial on the Border */
+.compass-dial-border {
+  position: absolute;
+  width: min(82cqw, 82cqh, 215px);
+  height: min(82cqw, 82cqh, 215px);
+  border: 2px double rgba(0, 242, 254, 0.15);
+  border-radius: 50%;
+  pointer-events: none;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  box-sizing: border-box;
+}
+
+.compass-dial-border::before {
+  content: '';
+  position: absolute;
+  width: calc(100% - 16px);
+  height: calc(100% - 16px);
+  border: 1px dashed rgba(0, 242, 254, 0.08);
+  border-radius: 50%;
+}
+
+/* Cardinal direction labels */
+.cardinal-label {
+  position: absolute;
+  font-family: var(--font-mono);
+  font-size: 0.85rem;
+  font-weight: 800;
+  color: var(--text-muted);
+  text-shadow: 0 0 4px rgba(0, 242, 254, 0.2);
+}
+
+.cardinal-label.n { top: 6px; color: var(--color-warning); }
+.cardinal-label.e { right: 8px; }
+.cardinal-label.s { bottom: 6px; }
+.cardinal-label.w { left: 8px; }
+
+/* Ticker marks */
+.compass-ticker {
+  position: absolute;
+  width: 1px;
+  height: 100%;
+  background: transparent;
+  display: flex;
+  justify-content: center;
+}
+
+.compass-ticker::before {
+  content: '';
+  position: absolute;
+  top: 0;
+  width: 1px;
+  height: 8px;
+  background: rgba(0, 242, 254, 0.25);
+}
+
+.compass-ticker::after {
+  content: '';
+  position: absolute;
+  bottom: 0;
+  width: 1px;
+  height: 8px;
+  background: rgba(0, 242, 254, 0.25);
+}
+
+/* Active Heading Pointer Container */
+.compass-pointer-container {
+  position: absolute;
+  width: 100%;
+  height: 100%;
+  transition: transform 0.2s cubic-bezier(0.25, 0.8, 0.25, 1);
+  display: flex;
+  justify-content: center;
+}
+
+/* Active Red Heading Pointer */
+.compass-pointer-red {
+  position: absolute;
+  top: -6px; /* slightly overlap the border */
+  width: 0;
+  height: 0;
+  border-left: 6px solid transparent;
+  border-right: 6px solid transparent;
+  border-top: 12px solid var(--color-danger);
+  filter: drop-shadow(0 0 5px var(--color-danger));
+}
+
+/* Calibration radar sweep animation */
+.compass-dial-border.calibrating {
+  border-color: var(--color-primary);
+  box-shadow: 0 0 12px rgba(0, 242, 254, 0.5);
+  animation: pulse 1s infinite alternate;
+}
+
+.compass-dial-border.calibrating::after {
+  content: 'ROTATE TANK 360°';
+  position: absolute;
+  font-family: var(--font-mono);
+  font-size: 0.65rem;
+  color: var(--color-primary);
+  bottom: 25px;
+}
+
+@keyframes sweep {
+  from { transform: rotate(0deg); }
+  to { transform: rotate(360deg); }
+}
+
+.compass-dial-border.calibrating .compass-pointer-container::before {
+  content: '';
+  position: absolute;
+  width: 50%;
+  height: 2px;
+  background: linear-gradient(to right, transparent, var(--color-primary));
+  top: 50%;
+  left: 50%;
+  transform-origin: left center;
+  animation: sweep 2s linear infinite;
+}
+
+/* Calibration Controls HUD buttons */
+.compass-calibration-controls {
+  display: flex;
+  gap: 10px;
+  margin-top: 12px;
+}
+
+.hud-btn {
+  flex: 1;
+  background: rgba(0, 242, 254, 0.08);
+  border: 1px solid rgba(0, 242, 254, 0.25);
+  color: var(--color-primary);
+  padding: 8px 10px;
+  font-family: var(--font-mono);
+  font-size: 0.72rem;
+  font-weight: 700;
+  border-radius: 4px;
+  cursor: pointer;
+  text-transform: uppercase;
+  letter-spacing: 1px;
+  transition: all 0.2s ease;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.hud-btn:hover {
+  background: rgba(0, 242, 254, 0.15);
+  border-color: var(--color-primary);
+  box-shadow: 0 0 8px rgba(0, 242, 254, 0.25);
+}
+
+.hud-btn.active {
+  background: rgba(255, 78, 80, 0.15);
+  border-color: var(--color-danger);
+  color: var(--color-danger);
+}
+
+.hud-btn.active:hover {
+  background: rgba(255, 78, 80, 0.25);
+  box-shadow: 0 0 8px rgba(255, 78, 80, 0.25);
+}
+
+.hud-btn.warning {
+  border-color: rgba(247, 183, 51, 0.25);
+  color: var(--color-warning);
+  background: rgba(247, 183, 51, 0.08);
+}
+
+.hud-btn.warning:hover {
+  background: rgba(247, 183, 51, 0.15);
+  border-color: var(--color-warning);
+  box-shadow: 0 0 8px rgba(247, 183, 51, 0.25);
+}
+
+.hud-btn:active {
+  transform: scale(0.95);
+}
+
+.hud-btn.active.pulse {
+  animation: pulse-red-border 1.5s infinite;
+}
+
+@keyframes pulse-red-border {
+  0% {
+    box-shadow: 0 0 0 0 rgba(255, 78, 80, 0.4);
+  }
+  70% {
+    box-shadow: 0 0 0 6px rgba(255, 78, 80, 0);
+  }
+  100% {
+    box-shadow: 0 0 0 0 rgba(255, 78, 80, 0);
+  }
+}
+
+/* Span Waveshare Camera/3D Panel across both columns */
+.feed-container.waveshare-esp32-feed {
+  grid-column: span 2;
+}
+
+/* Sidebar Calibration Stats Grid & Instructions */
+.calibration-stats-grid {
+  display: grid;
+  grid-template-columns: repeat(2, 1fr);
+  gap: 8px;
+  font-family: var(--font-mono);
+  font-size: 0.75rem;
+  background: rgba(0, 0, 0, 0.25);
+  border: 1px solid rgba(0, 242, 254, 0.1);
+  border-radius: 6px;
+  padding: 8px;
+  margin-top: 10px;
+}
+
+.cal-stat-item {
+  display: flex;
+  justify-content: space-between;
+  color: var(--text-muted);
+}
+
+.cal-stat-val {
+  color: var(--color-primary);
+  font-weight: bold;
+}
+
+.calibration-instructions {
+  font-size: 0.8rem;
+  color: var(--text-muted);
+  line-height: 1.4;
+  margin-bottom: 10px;
+  font-family: var(--font-mono);
 }
