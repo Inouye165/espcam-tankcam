@@ -56,6 +56,38 @@ function App() {
     return saved ? JSON.parse(saved) : { offsetX: 0, offsetY: 0, scaleX: 1, scaleY: 1, headingOffset: 0 };
   });
 
+  const [speedLimit, setSpeedLimit] = useState(255);
+  const [tuningLeftPWM, setTuningLeftPWM] = useState(0);
+  const [tuningRightPWM, setTuningRightPWM] = useState(0);
+  const [activeTuningStatus, setActiveTuningStatus] = useState('Calibration Ready.');
+  const [activeTuningColor, setActiveTuningColor] = useState('');
+  const [gamepadActive, setGamepadActive] = useState(false);
+
+  const gamepadIndexRef = useRef(null);
+  const lastSentXRef = useRef(0);
+  const lastSentYRef = useRef(0);
+  const lastSendTimeRef = useRef(0);
+  const statusRef = useRef(status);
+  useEffect(() => {
+    statusRef.current = status;
+  }, [status]);
+
+  // Safety: Stop motors immediately if the window/tab loses focus or tab changes visibility
+  useEffect(() => {
+    const handleBlurOrHide = () => {
+      setActiveKeys({ w: false, a: false, s: false, d: false });
+      setJoystickPos({ x: 0, y: 0 });
+      sendDriveCommand(0, 0);
+    };
+
+    window.addEventListener('blur', handleBlurOrHide);
+    document.addEventListener('visibilitychange', handleBlurOrHide);
+    return () => {
+      window.removeEventListener('blur', handleBlurOrHide);
+      document.removeEventListener('visibilitychange', handleBlurOrHide);
+    };
+  }, []);
+
 
   // Listen to Server-Sent Events (SSE) for real-time telemetry streaming and gyro yaw integration
   useEffect(() => {
@@ -416,6 +448,202 @@ function App() {
     }
   };
 
+  const sendDriveCommand = (x, y) => {
+    // Safety check: Completely ignore drive inputs if the browser tab is hidden/backgrounded
+    if (document.hidden) return;
+
+    const cam = statusRef.current.cameras?.['waveshare-esp32'];
+    if (!statusRef.current.isHostSecure || !cam?.connected) return;
+
+    const now = Date.now();
+    const isStop = x === 0 && y === 0;
+    const wasStop = lastSentXRef.current === 0 && lastSentYRef.current === 0;
+    const hasMovedSignificantly = Math.abs(x - lastSentXRef.current) > 0.02 || Math.abs(y - lastSentYRef.current) > 0.02;
+    const needsHeartbeat = !isStop && (now - lastSendTimeRef.current > 350);
+
+    if (
+      (now - lastSendTimeRef.current > 50 && hasMovedSignificantly) ||
+      (isStop && !wasStop) ||
+      needsHeartbeat
+    ) {
+      lastSentXRef.current = x;
+      lastSentYRef.current = y;
+      lastSendTimeRef.current = now;
+      
+      fetch(`/api/drive?x=${x.toFixed(2)}&y=${y.toFixed(2)}`)
+        .catch(err => {
+          console.error('Failed to send drive command:', err);
+        });
+    }
+  };
+
+  // Keyboard driving hook (updates the visualizer, which then triggers the joystick driving hook)
+  useEffect(() => {
+    if (gamepadIndexRef.current !== null) return;
+
+    let y = 0;
+    let x = 0;
+
+    if (activeKeys.w) y = 1.0;
+    else if (activeKeys.s) y = -1.0;
+
+    if (activeKeys.a) x = -1.0;
+    else if (activeKeys.d) x = 1.0;
+
+    setJoystickPos({ x: x * 30, y: -y * 30 });
+  }, [activeKeys]);
+
+  // Joystick driving hook
+  useEffect(() => {
+    if (gamepadIndexRef.current !== null) return;
+
+    if (joystickPos.x === 0 && joystickPos.y === 0) {
+      sendDriveCommand(0, 0);
+      return;
+    }
+
+    const x = joystickPos.x / 30;
+    const y = -joystickPos.y / 30;
+    sendDriveCommand(x, y);
+  }, [joystickPos]);
+
+  // Gamepad Loop & Hook
+  useEffect(() => {
+    const handleConnected = (e) => {
+      console.log("Gamepad connected:", e.gamepad.id);
+      gamepadIndexRef.current = e.gamepad.index;
+      setGamepadActive(true);
+    };
+
+    const handleDisconnected = () => {
+      console.log("Gamepad disconnected");
+      gamepadIndexRef.current = null;
+      setGamepadActive(false);
+      setJoystickPos({ x: 0, y: 0 }); // Reset visualizer on disconnect
+      sendDriveCommand(0, 0);
+    };
+
+    window.addEventListener("gamepadconnected", handleConnected);
+    window.addEventListener("gamepaddisconnected", handleDisconnected);
+
+    let frameId;
+    const scanGamepad = () => {
+      if (gamepadIndexRef.current !== null) {
+        const gamepads = navigator.getGamepads();
+        const gp = gamepads[gamepadIndexRef.current];
+        if (gp) {
+          let rawX = gp.axes[0];
+          let rawY = -gp.axes[1];
+
+          const dpadUp = gp.buttons[12]?.pressed;
+          const dpadDown = gp.buttons[13]?.pressed;
+          const dpadLeft = gp.buttons[14]?.pressed;
+          const dpadRight = gp.buttons[15]?.pressed;
+
+          if (dpadUp) rawY = 1.0;
+          else if (dpadDown) rawY = -1.0;
+          
+          if (dpadLeft) rawX = -1.0;
+          else if (dpadRight) rawX = 1.0;
+
+          // Increased deadzone to 10% (0.10) to safely filter out analog stick drift/jitter
+          const deadzone = 0.10;
+          let x = 0;
+          let y = 0;
+
+          if (Math.abs(rawX) > deadzone) {
+            x = Math.sign(rawX) * ((Math.abs(rawX) - deadzone) / (1.0 - deadzone));
+          }
+          if (Math.abs(rawY) > deadzone) {
+            y = Math.sign(rawY) * ((Math.abs(rawY) - deadzone) / (1.0 - deadzone));
+          }
+
+          // Update virtual joystick visual position to mimic deadzone-adjusted axes
+          // Scale controller axes to match the 30px visualizer radius
+          setJoystickPos({ x: x * 30, y: -y * 30 });
+
+          sendDriveCommand(x, y);
+        }
+      }
+      frameId = requestAnimationFrame(scanGamepad);
+    };
+
+    frameId = requestAnimationFrame(scanGamepad);
+
+    return () => {
+      window.removeEventListener("gamepadconnected", handleConnected);
+      window.removeEventListener("gamepaddisconnected", handleDisconnected);
+      cancelAnimationFrame(frameId);
+    };
+  }, []);
+
+  // Motor Calibration functions
+  const sendPWM = async (motor, value) => {
+    try {
+      const res = await fetch(`/api/set_pwm?motor=${motor}&val=${value}`);
+      if (!res.ok) throw new Error("HTTP error");
+      setActiveTuningStatus(`Live Tuning: ${motor.toUpperCase()} at PWM ${value}`);
+      setActiveTuningColor('stat-val success');
+    } catch (err) {
+      setActiveTuningStatus('Error: Connection lost!');
+      setActiveTuningColor('stat-val danger');
+    }
+  };
+
+  const adjustPWM = (motor, amount) => {
+    if (motor === 'left') {
+      const newVal = Math.max(0, Math.min(255, tuningLeftPWM + amount));
+      setTuningLeftPWM(newVal);
+      sendPWM('left', newVal);
+    } else {
+      const newVal = Math.max(0, Math.min(255, tuningRightPWM + amount));
+      setTuningRightPWM(newVal);
+      sendPWM('right', newVal);
+    }
+  };
+
+  const stopMotors = async () => {
+    try {
+      setTuningLeftPWM(0);
+      setTuningRightPWM(0);
+      await Promise.all([
+        fetch('/api/set_pwm?motor=left&val=0'),
+        fetch('/api/set_pwm?motor=right&val=0')
+      ]);
+      setActiveTuningStatus('Motors stopped.');
+      setActiveTuningColor('');
+    } catch (err) {
+      setActiveTuningStatus('Error: Failed to stop motors.');
+      setActiveTuningColor('stat-val danger');
+    }
+  };
+
+  const saveCalibration = async () => {
+    try {
+      setActiveTuningStatus('Saving to NVS...');
+      const res = await fetch(`/api/save?left=${tuningLeftPWM}&right=${tuningRightPWM}`);
+      if (!res.ok) throw new Error("HTTP error");
+      
+      setTuningLeftPWM(0);
+      setTuningRightPWM(0);
+      setActiveTuningStatus('Calibration Saved! Motors Stopped.');
+      setActiveTuningColor('stat-val success');
+    } catch (err) {
+      setActiveTuningStatus('Error: Failed to save calibration.');
+      setActiveTuningColor('stat-val danger');
+    }
+  };
+
+  const handleSpeedLimitChange = async (e) => {
+    const val = parseInt(e.target.value);
+    setSpeedLimit(val);
+    try {
+      await fetch(`/api/speed?val=${val}`);
+    } catch (err) {
+      console.error('Failed to update speed limit:', err);
+    }
+  };
+
   return (
     <>
       <header>
@@ -427,6 +655,9 @@ function App() {
         </div>
         <div className="sys-info">
           <div className="info-tag">TIME: {systemTime}</div>
+          <div className={`info-tag ${gamepadActive ? 'stat-val success' : 'stat-val warning'}`}>
+            GAMEPAD: {gamepadActive ? 'CONNECTED' : 'DISCONNECTED'}
+          </div>
           <div className={`info-tag ${status.isHostSecure ? 'stat-val success' : 'stat-val danger'}`}>
             NET: {status.isHostSecure ? 'VERIFIED' : 'UNSECURE'}
           </div>
@@ -768,6 +999,24 @@ function App() {
                   </div>
                 )}
               </div>
+
+              {/* Speed Limit Slider */}
+              <div style={{ padding: '0 10px', marginTop: '5px' }}>
+                <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: '6px' }}>
+                  <span className="stat-lbl">Speed Limit</span>
+                  <span className="stat-val active" style={{ fontWeight: 'bold' }}>
+                    {Math.round((speedLimit / 255) * 100)}% ({speedLimit})
+                  </span>
+                </div>
+                <input 
+                  type="range" 
+                  min="80" 
+                  max="255" 
+                  value={speedLimit} 
+                  onChange={handleSpeedLimitChange}
+                  style={{ width: '100%', accentColor: 'var(--color-primary)', background: 'rgba(255,255,255,0.1)', height: '4px', borderRadius: '2px', outline: 'none' }}
+                />
+              </div>
             </div>
           </div>
 
@@ -816,6 +1065,67 @@ function App() {
                 <span>Heading Zero Offset:</span>
                 <span className="cal-stat-val">{calParams.headingOffset.toFixed(1)}°</span>
               </div>
+            </div>
+          </div>
+
+          {/* Motor Driver Calibration Panel */}
+          <div className="panel-section" style={{ borderTop: '1px solid rgba(255,255,255,0.05)' }}>
+            <h3 className="section-title">Motor Driver Calibration</h3>
+            
+            <div className="calibration-stats-grid" style={{ marginBottom: '10px' }}>
+              <div className="cal-stat-item" style={{ gridColumn: 'span 2', borderBottom: '1px solid rgba(0, 242, 254, 0.15)', paddingBottom: '4px', marginBottom: '4px', fontWeight: 'bold' }}>
+                SAVED NVS CALIBRATIONS
+              </div>
+              <div className="cal-stat-item">
+                <span>NVS Min Left:</span>
+                <span className="cal-stat-val">
+                  {status.cameras?.['waveshare-esp32']?.sensors?.calibration?.left ?? 0}
+                </span>
+              </div>
+              <div className="cal-stat-item">
+                <span>NVS Min Right:</span>
+                <span className="cal-stat-val">
+                  {status.cameras?.['waveshare-esp32']?.sensors?.calibration?.right ?? 0}
+                </span>
+              </div>
+            </div>
+
+            {/* Tuning Left */}
+            <div style={{ marginBottom: '10px', background: 'rgba(0,0,0,0.2)', padding: '8px', borderRadius: '6px', border: '1px solid rgba(0,242,254,0.05)' }}>
+              <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: '6px', fontSize: '0.8rem' }}>
+                <span className="stat-lbl">Left Track Min PWM Tuning</span>
+                <span className="stat-val active" style={{ fontWeight: 'bold' }}>{tuningLeftPWM}</span>
+              </div>
+              <div style={{ display: 'grid', gridTemplateColumns: 'repeat(4, 1fr)', gap: '4px' }}>
+                <button className="hud-btn" style={{ padding: '4px 0', fontSize: '0.65rem' }} onClick={() => adjustPWM('left', -5)}>-5</button>
+                <button className="hud-btn" style={{ padding: '4px 0', fontSize: '0.65rem' }} onClick={() => adjustPWM('left', -1)}>-1</button>
+                <button className="hud-btn" style={{ padding: '4px 0', fontSize: '0.65rem' }} onClick={() => adjustPWM('left', 1)}>+1</button>
+                <button className="hud-btn" style={{ padding: '4px 0', fontSize: '0.65rem' }} onClick={() => adjustPWM('left', 5)}>+5</button>
+              </div>
+            </div>
+
+            {/* Tuning Right */}
+            <div style={{ marginBottom: '10px', background: 'rgba(0,0,0,0.2)', padding: '8px', borderRadius: '6px', border: '1px solid rgba(0,242,254,0.05)' }}>
+              <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: '6px', fontSize: '0.8rem' }}>
+                <span className="stat-lbl">Right Track Min PWM Tuning</span>
+                <span className="stat-val active" style={{ fontWeight: 'bold' }}>{tuningRightPWM}</span>
+              </div>
+              <div style={{ display: 'grid', gridTemplateColumns: 'repeat(4, 1fr)', gap: '4px' }}>
+                <button className="hud-btn" style={{ padding: '4px 0', fontSize: '0.65rem' }} onClick={() => adjustPWM('right', -5)}>-5</button>
+                <button className="hud-btn" style={{ padding: '4px 0', fontSize: '0.65rem' }} onClick={() => adjustPWM('right', -1)}>-1</button>
+                <button className="hud-btn" style={{ padding: '4px 0', fontSize: '0.65rem' }} onClick={() => adjustPWM('right', 1)}>+1</button>
+                <button className="hud-btn" style={{ padding: '4px 0', fontSize: '0.65rem' }} onClick={() => adjustPWM('right', 5)}>+5</button>
+              </div>
+            </div>
+
+            {/* Actions */}
+            <div style={{ display: 'flex', gap: '8px' }}>
+              <button className="hud-btn" onClick={saveCalibration}>💾 SAVE</button>
+              <button className="hud-btn active" onClick={stopMotors}>🛑 STOP</button>
+            </div>
+            
+            <div className={`telemetry-status-message ${activeTuningColor}`} style={{ fontSize: '0.75rem', marginTop: '4px' }}>
+              {activeTuningStatus}
             </div>
           </div>
         </aside>

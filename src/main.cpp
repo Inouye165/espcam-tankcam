@@ -2,6 +2,11 @@
 #include <WiFiUdp.h>
 #include "esp_http_server.h"
 
+#ifdef BOARD_WAVESHARE_ESP32
+#include "soc/soc.h"
+#include "soc/rtc_cntl_reg.h"
+#endif
+
 #ifndef DEVICE_NAME
 #define DEVICE_NAME "esp32cam"
 #endif
@@ -47,6 +52,44 @@
 #include <Wire.h>
 #include <Adafruit_INA219.h>
 #include <QMI8658.h>
+#include <Preferences.h>
+
+// L298N TB6612FNG Motor Driver Pins on Waveshare Board
+const int ENA_PIN = 25;  // Speed control (PWM) - PWMA
+const int IN1_PIN = 21;  // Direction 1 - AIN1
+const int IN2_PIN = 17;  // Direction 2 - AIN2
+
+const int ENB_PIN = 26;  // Speed control (PWM) - PWMB
+const int IN3_PIN = 22;  // Direction 1 - BIN1
+const int IN4_PIN = 23;  // Direction 2 - BIN2
+
+// PWM Constants
+const int PWM_FREQ = 500;
+const int PWM_RESOLUTION = 8;
+const int LEFT_PWM_CHANNEL = 0;
+const int RIGHT_PWM_CHANNEL = 1;
+
+// NVS Preferences for Calibration Storage
+Preferences prefs;
+int minLeftPWM = 0;
+int minRightPWM = 0;
+
+// Global Control State
+int motorSpeed = 255;            // Speed limit (80-255)
+float currentX = 0.0f;           // Proportional rotation input [-1.0, 1.0]
+float currentY = 0.0f;           // Proportional translation input [-1.0, 1.0]
+unsigned long lastDriveCmdTime = 0; // Timestamp of the last drive command (Watchdog)
+bool motorsActive = false;       // Tracks whether the motors are currently active
+
+// LEDC PWM Macros
+#if ESP_ARDUINO_VERSION >= ESP_ARDUINO_VERSION_VAL(3, 0, 0)
+  #define setupPWM(pin, freq, res, chan) ledcAttachChannel(pin, freq, res, chan)
+  #define writePWM(pin, chan, val)       ledcWrite(pin, val)
+#else
+  #define setupPWM(pin, freq, res, chan) { ledcSetup(chan, freq, res); ledcAttachPin(pin, chan); }
+  #define writePWM(pin, chan, val)       ledcWrite(chan, val)
+#endif
+
 extern Adafruit_INA219 ina219;
 extern bool ina219_initialized;
 extern QMI8658 imu;
@@ -173,6 +216,221 @@ bool readAK09918(float &mx, float &my, float &mz) {
   my = raw_y * 0.15f;
   mz = raw_z * 0.15f;
   return true;
+}
+
+void loadPreferences() {
+  prefs.begin("calibration", true); // read-only mode
+  minLeftPWM = prefs.getInt("leftMin", 0);
+  minRightPWM = prefs.getInt("rightMin", 0);
+  prefs.end();
+  Serial.printf("Preferences loaded: Left Min=%d, Right Min=%d\n", minLeftPWM, minRightPWM);
+}
+
+void savePreferences(int left, int right) {
+  prefs.begin("calibration", false); // read-write mode
+  prefs.putInt("leftMin", left);
+  prefs.putInt("rightMin", right);
+  prefs.end();
+  minLeftPWM = left;
+  minRightPWM = right;
+  Serial.printf("Preferences saved: Left Min=%d, Right Min=%d\n", minLeftPWM, minRightPWM);
+}
+
+void stopMotors() {
+  currentX = 0.0f;
+  currentY = 0.0f;
+  motorsActive = false;
+  digitalWrite(IN1_PIN, LOW);
+  digitalWrite(IN2_PIN, LOW);
+  writePWM(ENA_PIN, LEFT_PWM_CHANNEL, 0);
+
+  digitalWrite(IN3_PIN, LOW);
+  digitalWrite(IN4_PIN, LOW);
+  writePWM(ENB_PIN, RIGHT_PWM_CHANNEL, 0);
+  Serial.println("Motors stopped.");
+}
+
+void updateMotorOutputs() {
+  float leftPower = currentY + currentX;
+  float rightPower = currentY - currentX;
+
+  leftPower = constrain(leftPower, -1.0f, 1.0f);
+  rightPower = constrain(rightPower, -1.0f, 1.0f);
+
+  if (abs(leftPower) > 0.01f || abs(rightPower) > 0.01f) {
+    motorsActive = true;
+  } else {
+    motorsActive = false;
+  }
+
+  if (abs(leftPower) > 0.01f) {
+    int leftPWM = minLeftPWM + (int)(abs(leftPower) * (motorSpeed - minLeftPWM));
+    leftPWM = constrain(leftPWM, minLeftPWM, motorSpeed);
+    
+    if (leftPower > 0.01f) {
+      digitalWrite(IN1_PIN, HIGH);
+      digitalWrite(IN2_PIN, LOW);
+    } else {
+      digitalWrite(IN1_PIN, LOW);
+      digitalWrite(IN2_PIN, HIGH);
+    }
+    writePWM(ENA_PIN, LEFT_PWM_CHANNEL, leftPWM);
+  } else {
+    digitalWrite(IN1_PIN, LOW);
+    digitalWrite(IN2_PIN, LOW);
+    writePWM(ENA_PIN, LEFT_PWM_CHANNEL, 0);
+  }
+
+  if (abs(rightPower) > 0.01f) {
+    int rightPWM = minRightPWM + (int)(abs(rightPower) * (motorSpeed - minRightPWM));
+    rightPWM = constrain(rightPWM, minRightPWM, motorSpeed);
+    
+    if (rightPower > 0.01f) {
+      digitalWrite(IN3_PIN, HIGH);
+      digitalWrite(IN4_PIN, LOW);
+    } else {
+      digitalWrite(IN3_PIN, LOW);
+      digitalWrite(IN4_PIN, HIGH);
+    }
+    writePWM(ENB_PIN, RIGHT_PWM_CHANNEL, rightPWM);
+  } else {
+    digitalWrite(IN3_PIN, LOW);
+    digitalWrite(IN4_PIN, LOW);
+    writePWM(ENB_PIN, RIGHT_PWM_CHANNEL, 0);
+  }
+}
+
+// Helper query param parser
+bool get_query_param(httpd_req_t *req, const char *param, char *value, size_t val_len) {
+  char* buf;
+  size_t buf_len;
+  bool found = false;
+
+  buf_len = httpd_req_get_url_query_len(req) + 1;
+  if (buf_len > 1) {
+    buf = (char*)malloc(buf_len);
+    if (buf) {
+      if (httpd_req_get_url_query_str(req, buf, buf_len) == ESP_OK) {
+        if (httpd_query_key_value(buf, param, value, val_len) == ESP_OK) {
+          found = true;
+        }
+      }
+      free(buf);
+    }
+  }
+  return found;
+}
+
+// HTTP Handler for Drive: /drive?x=X&y=Y
+esp_err_t drive_handler(httpd_req_t *req) {
+  char x_str[16] = {0,};
+  char y_str[16] = {0,};
+
+  bool has_x = get_query_param(req, "x", x_str, sizeof(x_str));
+  bool has_y = get_query_param(req, "y", y_str, sizeof(y_str));
+
+  if (has_x && has_y) {
+    lastDriveCmdTime = millis();
+    currentX = atof(x_str);
+    currentY = atof(y_str);
+    currentX = constrain(currentX, -1.0f, 1.0f);
+    currentY = constrain(currentY, -1.0f, 1.0f);
+    updateMotorOutputs();
+    httpd_resp_set_hdr(req, "Access-Control-Allow-Origin", "*");
+    httpd_resp_send(req, "OK", 2);
+    return ESP_OK;
+  }
+
+  httpd_resp_send_err(req, HTTPD_400_BAD_REQUEST, "Missing x or y");
+  return ESP_FAIL;
+}
+
+// HTTP Handler for Speed Limit: /speed?val=VAL
+esp_err_t speed_handler(httpd_req_t *req) {
+  char val_str[16] = {0,};
+  if (get_query_param(req, "val", val_str, sizeof(val_str))) {
+    lastDriveCmdTime = millis();
+    int val = atoi(val_str);
+    motorSpeed = constrain(val, 80, 255);
+    updateMotorOutputs();
+    httpd_resp_set_hdr(req, "Access-Control-Allow-Origin", "*");
+    httpd_resp_send(req, "OK", 2);
+    return ESP_OK;
+  }
+
+  httpd_resp_send_err(req, HTTPD_400_BAD_REQUEST, "Missing val");
+  return ESP_FAIL;
+}
+
+// HTTP Handler for set_pwm (tuning): /set_pwm?motor=left|right&val=VAL
+esp_err_t set_pwm_handler(httpd_req_t *req) {
+  char motor_str[16] = {0,};
+  char val_str[16] = {0,};
+
+  bool has_motor = get_query_param(req, "motor", motor_str, sizeof(motor_str));
+  bool has_val = get_query_param(req, "val", val_str, sizeof(val_str));
+
+  if (has_motor && has_val) {
+    lastDriveCmdTime = millis();
+    int val = atoi(val_str);
+    val = constrain(val, 0, 255);
+    if (val > 0) {
+      motorsActive = true;
+    }
+    
+    if (strcmp(motor_str, "left") == 0) {
+      if (val > 0) {
+        digitalWrite(IN1_PIN, HIGH);
+        digitalWrite(IN2_PIN, LOW);
+      } else {
+        digitalWrite(IN1_PIN, LOW);
+        digitalWrite(IN2_PIN, LOW);
+      }
+      writePWM(ENA_PIN, LEFT_PWM_CHANNEL, val);
+    } else if (strcmp(motor_str, "right") == 0) {
+      if (val > 0) {
+        digitalWrite(IN3_PIN, HIGH);
+        digitalWrite(IN4_PIN, LOW);
+      } else {
+        digitalWrite(IN3_PIN, LOW);
+        digitalWrite(IN4_PIN, LOW);
+      }
+      writePWM(ENB_PIN, RIGHT_PWM_CHANNEL, val);
+    }
+    
+    httpd_resp_set_hdr(req, "Access-Control-Allow-Origin", "*");
+    httpd_resp_send(req, "OK", 2);
+    return ESP_OK;
+  }
+
+  httpd_resp_send_err(req, HTTPD_400_BAD_REQUEST, "Missing parameters");
+  return ESP_FAIL;
+}
+
+// HTTP Handler for Save calibration: /save?left=L&right=R
+esp_err_t save_handler(httpd_req_t *req) {
+  char left_str[16] = {0,};
+  char right_str[16] = {0,};
+
+  bool has_left = get_query_param(req, "left", left_str, sizeof(left_str));
+  bool has_right = get_query_param(req, "right", right_str, sizeof(right_str));
+
+  if (has_left && has_right) {
+    int leftVal = atoi(left_str);
+    int rightVal = atoi(right_str);
+    leftVal = constrain(leftVal, 0, 255);
+    rightVal = constrain(rightVal, 0, 255);
+
+    savePreferences(leftVal, rightVal);
+    stopMotors();
+
+    httpd_resp_set_hdr(req, "Access-Control-Allow-Origin", "*");
+    httpd_resp_send(req, "OK", 2);
+    return ESP_OK;
+  }
+
+  httpd_resp_send_err(req, HTTPD_400_BAD_REQUEST, "Missing parameters");
+  return ESP_FAIL;
 }
 #endif
 
@@ -372,17 +630,60 @@ void startCameraServer() {
     .user_ctx  = NULL
   };
 
+#ifdef BOARD_WAVESHARE_ESP32
+  httpd_uri_t drive_uri = {
+    .uri       = "/drive",
+    .method    = HTTP_GET,
+    .handler   = drive_handler,
+    .user_ctx  = NULL
+  };
+
+  httpd_uri_t speed_uri = {
+    .uri       = "/speed",
+    .method    = HTTP_GET,
+    .handler   = speed_handler,
+    .user_ctx  = NULL
+  };
+
+  httpd_uri_t set_pwm_uri = {
+    .uri       = "/set_pwm",
+    .method    = HTTP_GET,
+    .handler   = set_pwm_handler,
+    .user_ctx  = NULL
+  };
+
+  httpd_uri_t save_uri = {
+    .uri       = "/save",
+    .method    = HTTP_GET,
+    .handler   = save_handler,
+    .user_ctx  = NULL
+  };
+#endif
+
   Serial.printf("Starting stream server on port: '%d'\n", config.server_port);
   if (httpd_start(&stream_httpd, &config) == ESP_OK) {
     httpd_register_uri_handler(stream_httpd, &stream_uri);
     httpd_register_uri_handler(stream_httpd, &control_uri);
+#ifdef BOARD_WAVESHARE_ESP32
+    httpd_register_uri_handler(stream_httpd, &drive_uri);
+    httpd_register_uri_handler(stream_httpd, &speed_uri);
+    httpd_register_uri_handler(stream_httpd, &set_pwm_uri);
+    httpd_register_uri_handler(stream_httpd, &save_uri);
+#endif
   }
 }
 
 void connectToWifi() {
   WiFi.mode(WIFI_STA); // Explicitly set to station mode to disable SoftAP SSID broadcast
+#ifdef BOARD_WAVESHARE_ESP32
+  // Limit Wi-Fi TX power to prevent huge current spikes that drop voltage and brownout the board
+  WiFi.setTxPower(WIFI_POWER_8_5dBm);
+#endif
   Serial.println("Attempting connection to WiFi network 1: Pumpkinpie");
   WiFi.begin(ssid1, pass1);
+#ifdef BOARD_WAVESHARE_ESP32
+  WiFi.setTxPower(WIFI_POWER_8_5dBm);
+#endif
   
   int counter = 0;
   while (WiFi.status() != WL_CONNECTED && counter < 20) {
@@ -402,6 +703,9 @@ void connectToWifi() {
   Serial.println("Failed to connect to Pumpkinpie. Attempting connection to fallback network: Dobby");
   WiFi.disconnect();
   WiFi.begin(ssid2, pass2);
+#ifdef BOARD_WAVESHARE_ESP32
+  WiFi.setTxPower(WIFI_POWER_8_5dBm);
+#endif
 
   counter = 0;
   while (WiFi.status() != WL_CONNECTED && counter < 20) {
@@ -421,6 +725,11 @@ void connectToWifi() {
 }
 
 void setup() {
+#ifdef BOARD_WAVESHARE_ESP32
+  // Disable brownout detector to prevent reset on motor startup current dip
+  WRITE_PERI_REG(RTC_CNTL_BROWN_OUT_REG, 0);
+#endif
+
   Serial.begin(115200);
   Serial.setDebugOutput(true);
   Serial.println();
@@ -452,6 +761,22 @@ void setup() {
 
   // Initialize AK09918 magnetometer
   ak09918_initialized = initAK09918();
+
+  // Configure L298N TB6612FNG motor pins
+  pinMode(IN1_PIN, OUTPUT);
+  pinMode(IN2_PIN, OUTPUT);
+  pinMode(IN3_PIN, OUTPUT);
+  pinMode(IN4_PIN, OUTPUT);
+
+  // Configure PWM
+  setupPWM(ENA_PIN, PWM_FREQ, PWM_RESOLUTION, LEFT_PWM_CHANNEL);
+  setupPWM(ENB_PIN, PWM_FREQ, PWM_RESOLUTION, RIGHT_PWM_CHANNEL);
+  
+  // Load calibrations
+  loadPreferences();
+  
+  // Ensure motors are stopped initially
+  stopMotors();
 #endif
 
 
@@ -524,12 +849,26 @@ void setup() {
 void loop() {
   // Reconnect Wi-Fi if dropped
   if (WiFi.status() != WL_CONNECTED) {
+#ifdef BOARD_WAVESHARE_ESP32
+    if (motorsActive) {
+      Serial.println("Wi-Fi connection lost! Safety stopping motors.");
+      stopMotors();
+    }
+#endif
     Serial.println("Wi-Fi connection lost! Attempting to reconnect...");
     connectToWifi();
     if (WiFi.status() == WL_CONNECTED && stream_httpd == NULL) {
       startCameraServer();
     }
   }
+
+#ifdef BOARD_WAVESHARE_ESP32
+  // Motor watchdog safety check
+  if (motorsActive && (millis() - lastDriveCmdTime > 1000)) {
+    Serial.println("Watchdog: No drive command received for 1000ms. Safety stopping motors.");
+    stopMotors();
+  }
+#endif
 
   // Periodic UDP broadcast beacon
   if (WiFi.status() == WL_CONNECTED && isNetworkVerified()) {
@@ -588,7 +927,7 @@ void loop() {
         mz = -45.0; // vertical component
       }
 
-      beaconMsg = "{\"device\":\"" + deviceName + "\",\"ip\":\"" + ip.toString() + "\",\"ssid\":\"" + WiFi.SSID() + "\",\"sensors\":{\"voltage\":" + String(voltage, 2) + ",\"current\":" + String(current, 1) + ",\"power\":" + String(power, 1) + ",\"temp\":" + String(temp, 1) + ",\"accel\":{\"x\":" + String(ax, 2) + ",\"y\":" + String(ay, 2) + ",\"z\":" + String(az, 2) + "},\"gyro\":{\"x\":" + String(gx, 2) + ",\"y\":" + String(gy, 2) + ",\"z\":" + String(gz, 2) + "},\"mag\":{\"x\":" + String(mx, 2) + ",\"y\":" + String(my, 2) + ",\"z\":" + String(mz, 2) + "}}}";
+      beaconMsg = "{\"device\":\"" + deviceName + "\",\"ip\":\"" + ip.toString() + "\",\"ssid\":\"" + WiFi.SSID() + "\",\"sensors\":{\"voltage\":" + String(voltage, 2) + ",\"current\":" + String(current, 1) + ",\"power\":" + String(power, 1) + ",\"temp\":" + String(temp, 1) + ",\"accel\":{\"x\":" + String(ax, 2) + ",\"y\":" + String(ay, 2) + ",\"z\":" + String(az, 2) + "},\"gyro\":{\"x\":" + String(gx, 2) + ",\"y\":" + String(gy, 2) + ",\"z\":" + String(gz, 2) + "},\"mag\":{\"x\":" + String(mx, 2) + ",\"y\":" + String(my, 2) + ",\"z\":" + String(mz, 2) + "},\"calibration\":{\"left\":" + String(minLeftPWM) + ",\"right\":" + String(minRightPWM) + "}}}";
 
 #else
       beaconMsg = "{\"device\":\"" + deviceName + "\",\"ip\":\"" + ip.toString() + "\",\"ssid\":\"" + WiFi.SSID() + "\"}";

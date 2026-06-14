@@ -29,6 +29,9 @@ function setSSIDInfo(ssid, secure) {
 
 // Host Wi-Fi SSID network check (runs on Windows host)
 async function checkWifiSSID() {
+  let tempSSID = 'Unknown';
+  let tempSecure = false;
+
   try {
     const { stdout } = await execAsync('netsh wlan show interfaces');
     const lines = stdout.split('\n');
@@ -40,8 +43,8 @@ async function checkWifiSSID() {
       if (trimmed.startsWith('SSID') && trimmed.includes(':')) {
         const parts = trimmed.split(':');
         if (parts.length > 1) {
-          currentSSID = parts[1].trim();
-          isHostSecure = VERIFIED_SSIDS.includes(currentSSID);
+          tempSSID = parts[1].trim();
+          tempSecure = VERIFIED_SSIDS.includes(tempSSID);
           ssidFound = true;
           break;
         }
@@ -49,13 +52,34 @@ async function checkWifiSSID() {
     }
 
     if (!ssidFound) {
-      currentSSID = 'Disconnected/Ethernet/Other';
-      isHostSecure = false;
+      tempSSID = 'Disconnected/Ethernet/Other';
+      tempSecure = false;
     }
   } catch (err) {
-    currentSSID = 'Ethernet/Non-WiFi';
-    isHostSecure = false;
+    tempSSID = 'Ethernet/Non-WiFi';
+    tempSecure = false;
   }
+
+  // Fallback: Check network connection profiles (e.g. Ethernet) on Windows
+  if (!tempSecure) {
+    try {
+      const { stdout: psOut } = await execAsync('powershell -Command "Get-NetConnectionProfile | Select-Object -ExpandProperty Name"');
+      const names = psOut.split('\n').map(n => n.trim()).filter(Boolean);
+      for (const name of names) {
+        if (VERIFIED_SSIDS.includes(name)) {
+          tempSSID = name;
+          tempSecure = true;
+          break;
+        }
+      }
+    } catch (psErr) {
+      // Ignore powershell failures
+    }
+  }
+
+  // Atomic update to prevent transient security lockouts during network checks
+  currentSSID = tempSSID;
+  isHostSecure = tempSecure;
 }
 
 // UDP Listener for ESP32-CAM Discovery
@@ -169,6 +193,36 @@ app.get('/api/status', (req, res) => {
 });
 
 
+// Warm TCP socket pool for low-latency command proxying (HTTP Keep-Alive)
+// Constrained to 1 socket per host to prevent resource starvation on the ESP32
+const keepAliveAgent = new http.Agent({
+  keepAlive: true,
+  maxSockets: 1,
+  maxFreeSockets: 1,
+  timeout: 4000 // Close idle sockets after 4 seconds
+});
+
+// Helper to forward a GET request to an ESP device with a timeout and HTTP Keep-Alive
+function forwardGetRequest({ clientReq, url, res, successMsg, errorLogPrefix, errorResponseMsg, timeoutMs = 1500 }) {
+  const espReq = http.get(url, { agent: keepAliveAgent, timeout: timeoutMs }, (espRes) => {
+    if (res.headersSent) return;
+    res.status(espRes.statusCode).send(successMsg);
+  });
+
+  espReq.on('error', (err) => {
+    if (res.headersSent) return;
+    console.error(`${errorLogPrefix}:`, err.message);
+    res.status(502).send(errorResponseMsg);
+  });
+
+  espReq.on('timeout', () => {
+    espReq.destroy();
+    if (res.headersSent) return;
+    console.warn(`${errorLogPrefix} - Timeout after ${timeoutMs}ms`);
+    res.status(504).send('Gateway Timeout');
+  });
+}
+
 // Proxy route for MJPEG Stream
 app.get('/api/stream', (req, res) => {
   // Network security check: halt video if server detects unverified network
@@ -192,7 +246,7 @@ app.get('/api/stream', (req, res) => {
   console.log(`Proxying stream request to ${device} at ${cam.ip}`);
   const espUrl = `http://${cam.ip}/stream`;
 
-  const espReq = http.get(espUrl, (espRes) => {
+  const espReq = http.get(espUrl, { timeout: 5000 }, (espRes) => {
     // Optimization: Disable Nagle's algorithm on sockets for lowest latency
     if (req.socket) req.socket.setNoDelay(true);
     if (espRes.socket) espRes.socket.setNoDelay(true);
@@ -206,6 +260,14 @@ app.get('/api/stream', (req, res) => {
     console.error(`MJPEG Proxy connection error for ${device}:`, err.message);
     if (!res.headersSent) {
       res.status(502).send(`Bad gateway connection to ${device}`);
+    }
+  });
+
+  espReq.on('timeout', () => {
+    espReq.destroy();
+    console.warn(`MJPEG Stream connection timeout for ${device}`);
+    if (!res.headersSent) {
+      res.status(504).send('Gateway Timeout');
     }
   });
 
@@ -240,13 +302,125 @@ app.get('/api/control', (req, res) => {
   const espUrl = `http://${cam.ip}/control?var=${variable}&val=${val}`;
   console.log(`Forwarding control command to ${device}: ${espUrl}`);
 
-  const controlReq = http.get(espUrl, (espRes) => {
-    res.status(espRes.statusCode).send('Control command forwarded');
+  forwardGetRequest({
+    clientReq: req,
+    url: espUrl,
+    res,
+    successMsg: 'Control command forwarded',
+    errorLogPrefix: `Control proxy error for ${device}`,
+    errorResponseMsg: `Bad gateway communication with ${device}`
   });
+});
 
-  controlReq.on('error', (err) => {
-    console.error(`Control proxy error for ${device}:`, err.message);
-    res.status(502).send(`Bad gateway communication with ${device}`);
+// Proxy route for Drive controls: /api/drive?x=X&y=Y
+app.get('/api/drive', (req, res) => {
+  if (!isHostSecure) {
+    return res.status(403).send('Not on verified safe network');
+  }
+
+  const cam = cameras['waveshare-esp32'];
+  const cameraConnected = (Date.now() - cam.lastSeen) < 6000;
+  if (!cameraConnected || !cam.ip) {
+    return res.status(503).send('Waveshare disconnected');
+  }
+
+  const { x, y } = req.query;
+  if (x === undefined || y === undefined) {
+    return res.status(400).send('Missing parameters');
+  }
+
+  const espUrl = `http://${cam.ip}/drive?x=${x}&y=${y}`;
+  forwardGetRequest({
+    clientReq: req,
+    url: espUrl,
+    res,
+    successMsg: 'Drive command forwarded',
+    errorLogPrefix: 'Drive proxy error',
+    errorResponseMsg: 'Bad gateway connection to waveshare'
+  });
+});
+
+// Proxy route for Speed Limit: /api/speed?val=VAL
+app.get('/api/speed', (req, res) => {
+  if (!isHostSecure) {
+    return res.status(403).send('Not on verified safe network');
+  }
+
+  const cam = cameras['waveshare-esp32'];
+  const cameraConnected = (Date.now() - cam.lastSeen) < 6000;
+  if (!cameraConnected || !cam.ip) {
+    return res.status(503).send('Waveshare disconnected');
+  }
+
+  const { val } = req.query;
+  if (val === undefined) {
+    return res.status(400).send('Missing parameters');
+  }
+
+  const espUrl = `http://${cam.ip}/speed?val=${val}`;
+  forwardGetRequest({
+    clientReq: req,
+    url: espUrl,
+    res,
+    successMsg: 'Speed command forwarded',
+    errorLogPrefix: 'Speed proxy error',
+    errorResponseMsg: 'Bad gateway connection to waveshare'
+  });
+});
+
+// Proxy route for set_pwm: /api/set_pwm?motor=left|right&val=VAL
+app.get('/api/set_pwm', (req, res) => {
+  if (!isHostSecure) {
+    return res.status(403).send('Not on verified safe network');
+  }
+
+  const cam = cameras['waveshare-esp32'];
+  const cameraConnected = (Date.now() - cam.lastSeen) < 6000;
+  if (!cameraConnected || !cam.ip) {
+    return res.status(503).send('Waveshare disconnected');
+  }
+
+  const { motor, val } = req.query;
+  if (!motor || val === undefined) {
+    return res.status(400).send('Missing parameters');
+  }
+
+  const espUrl = `http://${cam.ip}/set_pwm?motor=${motor}&val=${val}`;
+  forwardGetRequest({
+    clientReq: req,
+    url: espUrl,
+    res,
+    successMsg: 'Set PWM command forwarded',
+    errorLogPrefix: 'Set PWM proxy error',
+    errorResponseMsg: 'Bad gateway connection to waveshare'
+  });
+});
+
+// Proxy route for save calibration: /api/save?left=L&right=R
+app.get('/api/save', (req, res) => {
+  if (!isHostSecure) {
+    return res.status(403).send('Not on verified safe network');
+  }
+
+  const cam = cameras['waveshare-esp32'];
+  const cameraConnected = (Date.now() - cam.lastSeen) < 6000;
+  if (!cameraConnected || !cam.ip) {
+    return res.status(503).send('Waveshare disconnected');
+  }
+
+  const { left, right } = req.query;
+  if (left === undefined || right === undefined) {
+    return res.status(400).send('Missing parameters');
+  }
+
+  const espUrl = `http://${cam.ip}/save?left=${left}&right=${right}`;
+  forwardGetRequest({
+    clientReq: req,
+    url: espUrl,
+    res,
+    successMsg: 'Save calibration command forwarded',
+    errorLogPrefix: 'Save calibration proxy error',
+    errorResponseMsg: 'Bad gateway connection to waveshare'
   });
 });
 

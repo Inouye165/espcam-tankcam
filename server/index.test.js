@@ -146,6 +146,87 @@ describe('ESP32-CAM Server Backend Regression Tests', () => {
     expect(response.body.cameras['waveshare-esp32'].ip).toBe('192.168.1.70');
     expect(response.body.cameras['waveshare-esp32'].sensors).toEqual(mockSensors);
   });
+
+  // New Drive & Calibration Endpoints Tests
+  test('GET /api/drive - block on unverified network', async () => {
+    setSSIDInfo('HackNet', false);
+    const response = await request(app).get('/api/drive?x=1.0&y=0.0');
+    expect(response.status).toBe(403);
+  });
+
+  test('GET /api/drive - return 503 if waveshare is disconnected', async () => {
+    setSSIDInfo('Dobby', true);
+    setMockCamera(null, null, 10000, 'waveshare-esp32');
+    const response = await request(app).get('/api/drive?x=1.0&y=0.0');
+    expect(response.status).toBe(503);
+  });
+
+  test('GET /api/drive - return 400 if parameters are missing', async () => {
+    setSSIDInfo('Dobby', true);
+    setMockCamera('192.168.1.70', 'Dobby', 0, 'waveshare-esp32');
+    const response = await request(app).get('/api/drive?x=1.0');
+    expect(response.status).toBe(400);
+  });
+
+  test('GET /api/speed - block on unverified network', async () => {
+    setSSIDInfo('HackNet', false);
+    const response = await request(app).get('/api/speed?val=200');
+    expect(response.status).toBe(403);
+  });
+
+  test('GET /api/speed - return 503 if waveshare is disconnected', async () => {
+    setSSIDInfo('Dobby', true);
+    setMockCamera(null, null, 10000, 'waveshare-esp32');
+    const response = await request(app).get('/api/speed?val=200');
+    expect(response.status).toBe(503);
+  });
+
+  test('GET /api/speed - return 400 if parameters are missing', async () => {
+    setSSIDInfo('Dobby', true);
+    setMockCamera('192.168.1.70', 'Dobby', 0, 'waveshare-esp32');
+    const response = await request(app).get('/api/speed');
+    expect(response.status).toBe(400);
+  });
+
+  test('GET /api/set_pwm - block on unverified network', async () => {
+    setSSIDInfo('HackNet', false);
+    const response = await request(app).get('/api/set_pwm?motor=left&val=100');
+    expect(response.status).toBe(403);
+  });
+
+  test('GET /api/set_pwm - return 503 if waveshare is disconnected', async () => {
+    setSSIDInfo('Dobby', true);
+    setMockCamera(null, null, 10000, 'waveshare-esp32');
+    const response = await request(app).get('/api/set_pwm?motor=left&val=100');
+    expect(response.status).toBe(503);
+  });
+
+  test('GET /api/set_pwm - return 400 if parameters are missing', async () => {
+    setSSIDInfo('Dobby', true);
+    setMockCamera('192.168.1.70', 'Dobby', 0, 'waveshare-esp32');
+    const response = await request(app).get('/api/set_pwm?val=100');
+    expect(response.status).toBe(400);
+  });
+
+  test('GET /api/save - block on unverified network', async () => {
+    setSSIDInfo('HackNet', false);
+    const response = await request(app).get('/api/save?left=50&right=50');
+    expect(response.status).toBe(403);
+  });
+
+  test('GET /api/save - return 503 if waveshare is disconnected', async () => {
+    setSSIDInfo('Dobby', true);
+    setMockCamera(null, null, 10000, 'waveshare-esp32');
+    const response = await request(app).get('/api/save?left=50&right=50');
+    expect(response.status).toBe(503);
+  });
+
+  test('GET /api/save - return 400 if parameters are missing', async () => {
+    setSSIDInfo('Dobby', true);
+    setMockCamera('192.168.1.70', 'Dobby', 0, 'waveshare-esp32');
+    const response = await request(app).get('/api/save?left=50');
+    expect(response.status).toBe(400);
+  });
 });
 
 
