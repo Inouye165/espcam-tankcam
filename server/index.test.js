@@ -23,7 +23,7 @@ describe('ESP32-CAM Server Backend Regression Tests', () => {
       cameras: {
         esp32cam: { connected: false, ip: null, ssid: null },
         'espcam-seeed': { connected: false, ip: null, ssid: null },
-        'waveshare-esp32': { connected: false, ip: null, ssid: null, sensors: null }
+        'maker-esp32': { connected: false, ip: null, ssid: null, sensors: null }
       }
     });
   });
@@ -43,7 +43,7 @@ describe('ESP32-CAM Server Backend Regression Tests', () => {
       cameras: {
         esp32cam: { connected: true, ip: '192.168.1.50', ssid: 'Dobby' },
         'espcam-seeed': { connected: false, ip: null, ssid: null },
-        'waveshare-esp32': { connected: false, ip: null, ssid: null, sensors: null }
+        'maker-esp32': { connected: false, ip: null, ssid: null, sensors: null }
       }
     });
   });
@@ -127,7 +127,7 @@ describe('ESP32-CAM Server Backend Regression Tests', () => {
     expect(response.text).toBe('Missing query parameters');
   });
 
-  test('GET /api/status - waveshare telemetry reporting', async () => {
+  test('GET /api/status - maker-esp32 telemetry reporting', async () => {
     setSSIDInfo('Pumpkinpie', true);
     const mockSensors = {
       voltage: 12.24,
@@ -138,13 +138,13 @@ describe('ESP32-CAM Server Backend Regression Tests', () => {
       gyro: { x: 1.2, y: -2.3, z: 0.5 },
       mag: { x: 30.0, y: 15.0, z: -45.0 }
     };
-    setMockCamera('192.168.1.70', 'Pumpkinpie', 0, 'waveshare-esp32', mockSensors);
+    setMockCamera('192.168.1.70', 'Pumpkinpie', 0, 'maker-esp32', mockSensors);
 
     const response = await request(app).get('/api/status');
     expect(response.status).toBe(200);
-    expect(response.body.cameras['waveshare-esp32'].connected).toBe(true);
-    expect(response.body.cameras['waveshare-esp32'].ip).toBe('192.168.1.70');
-    expect(response.body.cameras['waveshare-esp32'].sensors).toEqual(mockSensors);
+    expect(response.body.cameras['maker-esp32'].connected).toBe(true);
+    expect(response.body.cameras['maker-esp32'].ip).toBe('192.168.1.70');
+    expect(response.body.cameras['maker-esp32'].sensors).toEqual(mockSensors);
   });
 
   // New Drive & Calibration Endpoints Tests
@@ -154,16 +154,16 @@ describe('ESP32-CAM Server Backend Regression Tests', () => {
     expect(response.status).toBe(403);
   });
 
-  test('GET /api/drive - return 503 if waveshare is disconnected', async () => {
+  test('GET /api/drive - return 503 if maker-esp32 is disconnected', async () => {
     setSSIDInfo('Dobby', true);
-    setMockCamera(null, null, 10000, 'waveshare-esp32');
+    setMockCamera(null, null, 10000, 'maker-esp32');
     const response = await request(app).get('/api/drive?x=1.0&y=0.0');
     expect(response.status).toBe(503);
   });
 
   test('GET /api/drive - return 400 if parameters are missing', async () => {
     setSSIDInfo('Dobby', true);
-    setMockCamera('192.168.1.70', 'Dobby', 0, 'waveshare-esp32');
+    setMockCamera('192.168.1.70', 'Dobby', 0, 'maker-esp32');
     const response = await request(app).get('/api/drive?x=1.0');
     expect(response.status).toBe(400);
   });
@@ -174,16 +174,16 @@ describe('ESP32-CAM Server Backend Regression Tests', () => {
     expect(response.status).toBe(403);
   });
 
-  test('GET /api/speed - return 503 if waveshare is disconnected', async () => {
+  test('GET /api/speed - return 503 if maker-esp32 is disconnected', async () => {
     setSSIDInfo('Dobby', true);
-    setMockCamera(null, null, 10000, 'waveshare-esp32');
+    setMockCamera(null, null, 10000, 'maker-esp32');
     const response = await request(app).get('/api/speed?val=200');
     expect(response.status).toBe(503);
   });
 
   test('GET /api/speed - return 400 if parameters are missing', async () => {
     setSSIDInfo('Dobby', true);
-    setMockCamera('192.168.1.70', 'Dobby', 0, 'waveshare-esp32');
+    setMockCamera('192.168.1.70', 'Dobby', 0, 'maker-esp32');
     const response = await request(app).get('/api/speed');
     expect(response.status).toBe(400);
   });
@@ -194,16 +194,16 @@ describe('ESP32-CAM Server Backend Regression Tests', () => {
     expect(response.status).toBe(403);
   });
 
-  test('GET /api/set_pwm - return 503 if waveshare is disconnected', async () => {
+  test('GET /api/set_pwm - return 503 if maker-esp32 is disconnected', async () => {
     setSSIDInfo('Dobby', true);
-    setMockCamera(null, null, 10000, 'waveshare-esp32');
+    setMockCamera(null, null, 10000, 'maker-esp32');
     const response = await request(app).get('/api/set_pwm?motor=left&val=100');
     expect(response.status).toBe(503);
   });
 
   test('GET /api/set_pwm - return 400 if parameters are missing', async () => {
     setSSIDInfo('Dobby', true);
-    setMockCamera('192.168.1.70', 'Dobby', 0, 'waveshare-esp32');
+    setMockCamera('192.168.1.70', 'Dobby', 0, 'maker-esp32');
     const response = await request(app).get('/api/set_pwm?val=100');
     expect(response.status).toBe(400);
   });
@@ -214,19 +214,50 @@ describe('ESP32-CAM Server Backend Regression Tests', () => {
     expect(response.status).toBe(403);
   });
 
-  test('GET /api/save - return 503 if waveshare is disconnected', async () => {
+  test('GET /api/save - return 503 if maker-esp32 is disconnected', async () => {
     setSSIDInfo('Dobby', true);
-    setMockCamera(null, null, 10000, 'waveshare-esp32');
+    setMockCamera(null, null, 10000, 'maker-esp32');
     const response = await request(app).get('/api/save?left=50&right=50');
     expect(response.status).toBe(503);
   });
 
   test('GET /api/save - return 400 if parameters are missing', async () => {
     setSSIDInfo('Dobby', true);
-    setMockCamera('192.168.1.70', 'Dobby', 0, 'waveshare-esp32');
+    setMockCamera('192.168.1.70', 'Dobby', 0, 'maker-esp32');
     const response = await request(app).get('/api/save?left=50');
     expect(response.status).toBe(400);
   });
+
+  test('GET /api/stop - block on unverified network', async () => {
+    setSSIDInfo('HackNet', false);
+    const response = await request(app).get('/api/stop');
+    expect(response.status).toBe(403);
+  });
+
+  test('GET /api/stop - return 503 if maker-esp32 is disconnected', async () => {
+    setSSIDInfo('Dobby', true);
+    setMockCamera(null, null, 10000, 'maker-esp32');
+    const response = await request(app).get('/api/stop');
+    expect(response.status).toBe(503);
+  });
+
+  test('GET /api/test_motor - block on unverified network', async () => {
+    setSSIDInfo('HackNet', false);
+    const response = await request(app).get('/api/test_motor?motor=left&dir=forward&pwm=80&duration=500');
+    expect(response.status).toBe(403);
+  });
+
+  test('GET /api/test_motor - return 503 if maker-esp32 is disconnected', async () => {
+    setSSIDInfo('Dobby', true);
+    setMockCamera(null, null, 10000, 'maker-esp32');
+    const response = await request(app).get('/api/test_motor?motor=left&dir=forward&pwm=80&duration=500');
+    expect(response.status).toBe(503);
+  });
+
+  test('GET /api/test_motor - return 400 if parameters are missing', async () => {
+    setSSIDInfo('Dobby', true);
+    setMockCamera('192.168.1.70', 'Dobby', 0, 'maker-esp32');
+    const response = await request(app).get('/api/test_motor?motor=left');
+    expect(response.status).toBe(400);
+  });
 });
-
-

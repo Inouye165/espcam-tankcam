@@ -1,10 +1,11 @@
-# ESP32-CAM Robot Tank Control Center
+# ESP32-CAM & ESP Maker Robot Tank Cockpit
 
-This repository contains the complete workspace for a secure, low-latency robot tank control center supporting **dual-camera feeds**:
-1. **`esp32cam`**: The original AI-Thinker ESP32-CAM board (connected to `COM6`).
-2. **`espcam-seeed`**: A Seeed Studio XIAO ESP32S3 Sense camera board (connected to `COM18`, with fallback mock stream support for XIAO ESP32C3).
+This repository contains the complete workspace for a secure, low-latency robot tank control center. It coordinates:
+1. **`esp32cam`**: The AI-Thinker ESP32-CAM board (connected to `COM6`) providing live video stream.
+2. **`espcam-seeed`**: A Seeed Studio XIAO ESP32S3 Sense camera board (connected to `COM18`, with fallback mock stream support) as an alternative/secondary video feed.
+3. **`maker-esp32`**: The main robot actuator controller running on the **ESP Maker (esp-maker-usba-4motor)** board. It drives the tank's motors, displays telemetry on its OLED screen, and controls RGB NeoPixel lights.
 
-The workspace includes embedded C++ firmware (PlatformIO), a local Node.js relay proxy, and a futuristic dual-feed React dashboard.
+The workspace includes embedded C++ firmware (PlatformIO), a local Node.js relay proxy server, and a futuristic, glassmorphic React dashboard cockpit.
 
 ---
 
@@ -12,54 +13,56 @@ The workspace includes embedded C++ firmware (PlatformIO), a local Node.js relay
 
 ```mermaid
 graph TD
-    ESP1["ESP32-CAM (esp32cam)"] -- "UDP Beacon (Port 3000)" --> Node["Node.js Backend (Port 5000)"]
-    ESP2["XIAO ESP32S3 (espcam-seeed)"] -- "UDP Beacon (Port 3000)" --> Node
-    ESP1 -- "MJPEG Stream (/stream?device=esp32cam)" --> Node
-    ESP2 -- "MJPEG Stream (/stream?device=espcam-seeed)" --> Node
+    ESP_CAM["ESP32-CAM (esp32cam)"] -- "UDP Beacon (Port 3000)" --> Node["Node.js Backend (Port 5000)"]
+    ESP_MAKER["ESP Maker (maker-esp32)"] -- "UDP Beacon (Port 41412)" --> Node
+    ESP_CAM -- "MJPEG Stream (/stream)" --> Node
     Node -- "Piped Streams & Status API (/api/*)" --> React["React Frontend"]
-    Node -- "SSID Check" --> Netsh["netsh wlan show interfaces"]
-    React -- "WASD / Joystick Inputs" --> Control["UI Driving HUD"]
+    React -- "Safe Motor Checklist & HUD Drive" --> Node
+    Node -- "Proxy Controls & LED Commands" --> ESP_MAKER
+    React -- "RGB Color Picker" --> Node
 ```
 
 ---
 
 ## Features
 
-### 1. Zero-Configuration Multi-Device UDP Auto-Discovery
-To avoid hardcoding IP addresses, each ESP32 board broadcasts a JSON packet on UDP port 3000 every 2 seconds. The packet contains the board's unique name (`esp32cam` or `espcam-seeed`), local IP, and SSID. The Node.js server listens to these beacons and registers/tracks each device dynamically.
+### 1. Zero-Configuration UDP Auto-Discovery
+To avoid hardcoding IP addresses across devices:
+- Camera boards (`esp32cam` / `espcam-seeed`) broadcast JSON discovery packets on UDP port `3000` every 2 seconds.
+- The **ESP Maker Board** (`maker-esp32`) broadcasts discovery beacons on UDP port `41412` every 3 seconds.
+- The Node.js server listens to these beacons, dynamically registering device IPs (`10.0.0.58`, etc.) for seamless connection.
 
 ### 2. Dual Wi-Fi Client Connection & AP Suppress
-Both cameras are programmed to connect client-side only:
-- First, it attempts connection to `SSID: Pumpkinpie` (password: `dobbyaspenindy`).
-- If unsuccessful within 10 seconds, it falls back to `SSID: Dobby` (password: `sanmina-1`).
-- **AP Mode Suppressed**: Sets `WiFi.mode(WIFI_STA)` at startup to prevent the ESP32 from running its own Access Point and broadcasting an SSID.
-- They output serial diagnostics at `115200` baud.
+All boards are configured client-side only to stay secure:
+- They attempt connection to `SSID: Pumpkinpie` (password: `dobbyaspenindy`).
+- If unsuccessful, they fallback to `SSID: Dobby` (password: `sanmina-1`).
+- Access Point (AP) mode is disabled (`WiFi.mode(WIFI_STA)`) on all devices to suppress open SSID broadcasts.
 
 ### 3. Dual-Verification Network Security Lockout
-The entire system operates strictly on the two verified SSIDs. Both nodes perform checks:
-- **Firmware**: Checks its current SSID. If not on `Pumpkinpie` or `Dobby`, it rejects stream and control requests with HTTP 403.
+The entire system operates strictly on verified SSIDs. Both nodes perform checks:
+- **Firmware**: Checks its current SSID. If not on `Pumpkinpie` or `Dobby`, it rejects requests with HTTP 403.
 - **Node.js Server**: Checks the host PC's Wi-Fi network signature using `netsh wlan show interfaces`. If not on a verified SSID, it blocks proxy streams and controls immediately, transmitting a lockout status.
 - **React Frontend**: Overlays a lockout alert screen reading **"Not on verified safe network"** when security triggers.
 
-### 4. Low-Latency Camera Stream & Socket Tuning
-- **Double Buffering & High Frame Rate**: Configured PlatformIO build flags to utilize PSRAM. When memory is detected, the module enables double buffering (`fb_count = 2`) and high-clarity JPEG compression (`jpeg_quality = 10`) at QVGA resolution.
-- **Mock Camera Fallback**: If using a XIAO ESP32C3 (which lacks camera pins), a mock stream handler feeds a valid static JPEG to test Wi-Fi connectivity and backend integration.
-- **TCP setNoDelay Socket Tuning**: Disabled Nagle's algorithm on the proxy backend (`socket.setNoDelay(true)`) to prevent TCP grouping delays. Frames are piped immediately to the browser for low driving latency.
+### 4. ⚠️ Safe Motor Verification Control
+To protect the tank and motor driver circuits from high current spikes:
+- Before the main driving joystick/HUD unlocks, the operator must complete a 4-step motor direction verification flow.
+- Direction tests send timed pulses to each motor/direction.
+- Operators must check "Pass" for all 4 tests before the Main Drive HUD becomes interactive.
 
-### 5. Multi-Feed Cockpit Dashboard
-- **Dual Live Feeds**: Displays both feeds side-by-side (collapsing to stacked vertically on narrow screens) with individual network statistics.
-- **HUD Telemetry Status**: Displays host security status and link/IP statuses for both active cameras.
-- **Self-Contained Flash Toggles**: Allows toggling the flash light or user status LED individually for each camera feed card.
-- **Keyboard WASD HUD & Analog Joystick**: A global controller HUD that visualizes keystrokes and displacement inputs to drive the robot tank.
+### 5. RGB NeoPixel Studio
+- The cockpit features a full dynamic color picker for the tank's NeoPixels.
+- Select target LEDs (`ALL`, `L0`, `L1`, `L2`, `L3`) and control color sweeps or specific custom hex codes.
 
 ---
 
 ## Project Structure
 
-- `platformio.ini`: PlatformIO hardware definitions (`esp32cam` on COM6, `espcam-seeed` on COM18).
-- `src/main.cpp`: ESP32 C++ firmware (handles both AI-Thinker and Seeed Studio board pin layouts).
-- `server/`: Node.js Express proxy and UDP discovery daemon.
-- `frontend/`: React + Vite single-page console dashboard.
+- `espcam-tankcam/src/main.cpp`: ESP32-CAM firmware (handles stream, flash control, and UDP discovery beacons).
+- `espcam-tankcam/platformio.ini`: PlatformIO hardware definitions for camera environments.
+- `esp-maker-usba-4motor/`: Embedded firmware workspace for the main **ESP Maker Board** actuator controller.
+- `server/`: Node.js Express proxy, UDP auto-discovery daemon, and static asset router.
+- `frontend/`: React + Vite single-page cockpit dashboard console.
 
 ---
 
@@ -69,48 +72,47 @@ The entire system operates strictly on the two verified SSIDs. Both nodes perfor
 
 1. Select your target environment in PlatformIO or flash via terminal:
    ```bash
-   # Upload to the AI-Thinker ESP32-CAM (COM6)
+   # Upload to the ESP32-CAM (COM6)
    pio run -e esp32cam --target upload
 
    # Upload to the Seeed Studio XIAO ESP32S3 (COM18)
    pio run -e espcam-seeed --target upload
    ```
-2. Reboot the module to begin broadcasting UDP beacons.
+2. Navigate to `esp-maker-usba-4motor/` and flash the ESP Maker board:
+   ```bash
+   pio run --target upload
+   ```
 
 ### B. Launching the Backend Server & Dashboard (Production Mode)
 
 To run the unified server that handles the camera proxies and serves the React cockpit dashboard:
 
 1. **Verify Network**: Ensure your Host PC is connected to one of the verified Wi-Fi networks (`Pumpkinpie` or `Dobby`).
-2. **Navigate to the Server Directory**: Open your terminal and change your directory to the `server/` folder:
+2. **Navigate to the Server Directory**:
    ```bash
    cd server
    ```
-3. **Install Dependencies** (only required the first time):
+3. **Install Dependencies**:
    ```bash
    npm install
    ```
-4. **Start the Server**: Run the start script from within the `server/` directory:
+4. **Start the Server**:
    ```bash
    npm start
    ```
-   *This starts the backend server on HTTP port 5000, begins listening for UDP beacons on port 3000, and automatically hosts the compiled React console UI.*
+   *This starts the backend server on HTTP port 5000, listens for discovery beacons, and hosts the React console UI.*
 5. **Access the Cockpit**: Open your web browser and go to: **`http://localhost:5000`**
 
 ### C. Running in Development Mode (Optional)
 
 If you are modifying the frontend React code and want hot-reloading:
 
-1. **Start the Backend**: Run `npm start` from within the `server/` directory as described above.
-2. **Navigate to the Frontend Directory**: Open a second terminal window and go to the `frontend/` folder:
-   ```bash
-   cd frontend
-   ```
-3. **Start the Dev Server**: Run the development script from within the `frontend/` directory:
+1. **Start the Backend**: Run `npm start` from within the `server/` directory.
+2. **Start the Dev Server**: Open a second terminal window, navigate to `frontend/`, and run:
    ```bash
    npm run dev
    ```
-4. **Access the Dev Console**: Open your web browser and go to: **`http://localhost:5173`** *(Vite will proxy API requests to the backend server running on port 5000)*.
+3. **Access the Dev Console**: Open your web browser and go to: **`http://localhost:5173`** *(Vite will proxy API requests to the backend server running on port 5000)*.
 
 ---
 

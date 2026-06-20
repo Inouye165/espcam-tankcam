@@ -1,66 +1,46 @@
 import React, { useState, useEffect, useRef } from 'react';
 
-const getCompassDirection = (deg) => {
-  if (deg === undefined || isNaN(deg)) return 'N/A';
-  const directions = ['N', 'NNE', 'NE', 'ENE', 'E', 'ESE', 'SE', 'SSE', 'S', 'SSW', 'SW', 'WSW', 'W', 'WNW', 'NW', 'NNW'];
-  const idx = Math.round(((deg % 360) / 22.5)) % 16;
-  return directions[idx];
-};
-
 function App() {
+  // Connections status state
   const [status, setStatus] = useState({
     isHostSecure: false,
     hostSsid: 'Checking...',
     cameras: {
       esp32cam: { connected: false, ip: null, ssid: null },
-      'espcam-seeed': { connected: false, ip: null, ssid: null },
-      'waveshare-esp32': { connected: false, ip: null, ssid: null, sensors: null }
+      'maker-esp32': { connected: false, ip: null, ssid: null, sensors: null }
     }
   });
 
-  const [activeKeys, setActiveKeys] = useState({
-    w: false,
-    a: false,
-    s: false,
-    d: false
-  });
-
+  // Driving keys state
+  const [activeKeys, setActiveKeys] = useState({ w: false, a: false, s: false, d: false });
   const [joystickPos, setJoystickPos] = useState({ x: 0, y: 0 });
   const [isDragging, setIsDragging] = useState(false);
   const [systemTime, setSystemTime] = useState(new Date().toLocaleTimeString());
-  const [flashStates, setFlashStates] = useState({
-    esp32cam: false,
-    'espcam-seeed': false,
-    'waveshare-esp32': false
-  });
   const joystickRef = useRef(null);
-  const [tankYaw, setTankYaw] = useState(0);
-  const [boardYaw, setBoardYaw] = useState(0);
-  const boardYawRef = useRef(0);
-  const lastUpdateRef = useRef(Date.now());
-  const [smoothedOrientation, setSmoothedOrientation] = useState({ pitch: 0, roll: 0, yaw: 0 });
-  const smoothedRef = useRef({ pitch: 0, roll: 0, yaw: 0 });
-  const [motionStats, setMotionStats] = useState({ speed: 0, distance: 0, dirAngle: 0, compassHeading: 0 });
-  const localVelRef = useRef({ x: 0, y: 0 });
-  const lastAccelRef = useRef({ x: 0, y: 0, z: 1000 });
-  const distanceRef = useRef(0);
-  const accelBiasRef = useRef(null);
-  const compassHeadingRef = useRef(null);
-  const rawHeadingRef = useRef(0);
-  const calMinRef = useRef({ x: Infinity, y: Infinity });
-  const calMaxRef = useRef({ x: -Infinity, y: -Infinity });
 
-  const [calibrating, setCalibrating] = useState(false);
-  const [calParams, setCalParams] = useState(() => {
-    const saved = localStorage.getItem('waveshare_compass_cal');
-    return saved ? JSON.parse(saved) : { offsetX: 0, offsetY: 0, scaleX: 1, scaleY: 1, headingOffset: 0 };
+  // Safety test verification checklist
+  const [isVerified, setIsVerified] = useState(() => {
+    return localStorage.getItem('maker_tank_verified') === 'true';
   });
+  const [testChecklist, setTestChecklist] = useState({
+    leftFwd: false,
+    leftRev: false,
+    rightFwd: false,
+    rightRev: false
+  });
+  
+  // LED Studio State
+  const [selectedLed, setSelectedLed] = useState(-1); // -1 = All, 0-3 = specific LED
+  const [pickerColor, setPickerColor] = useState('#4facfe');
 
-  const [speedLimit, setSpeedLimit] = useState(255);
-  const [tuningLeftPWM, setTuningLeftPWM] = useState(0);
-  const [tuningRightPWM, setTuningRightPWM] = useState(0);
-  const [activeTuningStatus, setActiveTuningStatus] = useState('Calibration Ready.');
-  const [activeTuningColor, setActiveTuningColor] = useState('');
+  // Interactive/Test speed limit caps
+  const [speedLimit, setSpeedLimit] = useState(() => {
+    const verified = localStorage.getItem('maker_tank_verified') === 'true';
+    return verified ? 191 : 80;
+  });
+  const [isTestRunning, setIsTestRunning] = useState(false);
+  const [activeStatusMessage, setActiveStatusMessage] = useState('Cockpit Ready.');
+  const [statusColorClass, setStatusColorClass] = useState('');
   const [gamepadActive, setGamepadActive] = useState(false);
 
   const gamepadIndexRef = useRef(null);
@@ -68,28 +48,117 @@ function App() {
   const lastSentYRef = useRef(0);
   const lastSendTimeRef = useRef(0);
   const statusRef = useRef(status);
+  const testTimeoutRef = useRef(null);
+  const activeKeysRef = useRef({ w: false, a: false, s: false, d: false });
+  const lastJoystickPosRef = useRef({ x: 0, y: 0 });
+
   useEffect(() => {
     statusRef.current = status;
   }, [status]);
 
-  // Safety: Stop motors immediately if the window/tab loses focus or tab changes visibility
+  // Clean stop command
+  const sendStopCommand = () => {
+    setActiveKeys({ w: false, a: false, s: false, d: false });
+    setJoystickPos({ x: 0, y: 0 });
+    lastSentXRef.current = 0;
+    lastSentYRef.current = 0;
+
+    if (testTimeoutRef.current) {
+      clearTimeout(testTimeoutRef.current);
+      testTimeoutRef.current = null;
+    }
+    setIsTestRunning(false);
+
+    fetch('/api/stop').catch(err => {
+      console.error('Failed to send stop command:', err);
+    });
+  };
+
+  // Safe timed motor test runner
+  const runMotorTest = async (motor, dir) => {
+    if (isTestRunning) return;
+    setIsTestRunning(true);
+    setActiveStatusMessage(`Running Motor Test: ${motor.toUpperCase()} ${dir}...`);
+    setStatusColorClass('stat-val warning');
+
+    try {
+      await fetch('/api/stop').catch(() => {});
+      await new Promise(resolve => setTimeout(resolve, 100));
+
+      // Trigger test at low safe speed (PWM = 80, Duration = 500ms)
+      const res = await fetch(`/api/test_motor?motor=${motor}&dir=${dir}&pwm=80&duration=500`);
+      if (!res.ok) {
+        throw new Error("Failed to start motor test");
+      }
+
+      testTimeoutRef.current = setTimeout(async () => {
+        try {
+          await fetch('/api/stop').catch(() => {});
+          setActiveStatusMessage(`Test complete for ${motor.toUpperCase()} ${dir}.`);
+          setStatusColorClass('stat-val success');
+        } finally {
+          setIsTestRunning(false);
+        }
+      }, 600);
+
+    } catch (err) {
+      console.error("Motor test error:", err);
+      await fetch('/api/stop').catch(() => {});
+      setActiveStatusMessage("Error: Motor test failed!");
+      setStatusColorClass('stat-val danger');
+      setIsTestRunning(false);
+    }
+  };
+
+  // Perform emergency stop
+  const handleEmergencyStop = () => {
+    sendStopCommand();
+    setActiveStatusMessage('EMERGENCY STOP TRIGGERED.');
+    setStatusColorClass('stat-val danger');
+  };
+
+  // Document blur safety checks
   useEffect(() => {
     const handleBlurOrHide = () => {
-      setActiveKeys({ w: false, a: false, s: false, d: false });
-      setJoystickPos({ x: 0, y: 0 });
-      sendDriveCommand(0, 0);
+      sendStopCommand();
+    };
+
+    const handleBeforeUnload = () => {
+      fetch('/api/stop', { keepalive: true }).catch(() => {});
     };
 
     window.addEventListener('blur', handleBlurOrHide);
     document.addEventListener('visibilitychange', handleBlurOrHide);
+    window.addEventListener('beforeunload', handleBeforeUnload);
+
     return () => {
       window.removeEventListener('blur', handleBlurOrHide);
       document.removeEventListener('visibilitychange', handleBlurOrHide);
+      window.removeEventListener('beforeunload', handleBeforeUnload);
     };
   }, []);
 
+  // Connection watchdog stop
+  const prevConnectedRef = useRef(false);
+  const prevSecureRef = useRef(false);
+  useEffect(() => {
+    const makerCam = status.cameras?.['maker-esp32'];
+    const currentConnected = !!makerCam?.connected;
+    const currentSecure = !!status.isHostSecure;
 
-  // Listen to Server-Sent Events (SSE) for real-time telemetry streaming and gyro yaw integration
+    if (prevConnectedRef.current && !currentConnected) {
+      console.warn("Connection to ESP Maker Board lost! Enforcing safety stop.");
+      sendStopCommand();
+    } else if (prevSecureRef.current && !currentSecure) {
+      console.warn("Network security signatures lost! Enforcing safety stop.");
+      sendStopCommand();
+    }
+
+    prevConnectedRef.current = currentConnected;
+    prevSecureRef.current = currentSecure;
+  }, [status]);
+
+  // Server Sent Events (SSE) telemetry receiver
   useEffect(() => {
     const eventSource = new EventSource('/api/telemetry-stream');
 
@@ -109,168 +178,17 @@ function App() {
               sensors: data.sensors
             };
           }
-          return {
-            ...prev,
-            cameras: nextCameras
-          };
+          return { ...prev, cameras: nextCameras };
         });
-
-        // Integrate Gyro Z angular velocity to track boardYaw in real-time
-        if (device === 'waveshare-esp32' && data.sensors) {
-          const accel = data.sensors.accel || { x: 0, y: 0, z: 9.8 };
-          const mag = data.sensors.mag || { x: 0, y: 0, z: 0 };
-          const pitchRad = Math.atan2(-accel.x, Math.sqrt(accel.y * accel.y + accel.z * accel.z));
-          const rollRad = Math.atan2(accel.y, accel.z);
-          const pitchRaw = (pitchRad * 180) / Math.PI;
-          const rollRaw = (rollRad * 180) / Math.PI;
-
-          const now = Date.now();
-          const dt = (now - lastUpdateRef.current) / 1000;
-          lastUpdateRef.current = now;
-
-          // Calculate absolute tilt-compensated compass heading
-          let compassHeading = 0;
-          if (mag.x !== 0 || mag.y !== 0 || mag.z !== 0) {
-            // If calibrating, capture raw values in ref
-            if (calibrating) {
-              if (mag.x < calMinRef.current.x) calMinRef.current.x = mag.x;
-              if (mag.x > calMaxRef.current.x) calMaxRef.current.x = mag.x;
-              if (mag.y < calMinRef.current.y) calMinRef.current.y = mag.y;
-              if (mag.y > calMaxRef.current.y) calMaxRef.current.y = mag.y;
-            }
-
-            // Apply hard-iron offset and soft-iron scale factors
-            const mx = (mag.x - calParams.offsetX) * calParams.scaleX;
-            const my = (mag.y - calParams.offsetY) * calParams.scaleY;
-            const mz = mag.z;
-
-            const cosRoll = Math.cos(rollRad);
-            const sinRoll = Math.sin(rollRad);
-            const cosPitch = Math.cos(pitchRad);
-            const sinPitch = Math.sin(pitchRad);
-
-            // Project magnetic field vectors onto the horizontal plane
-            const xh = mx * cosPitch + my * sinRoll * sinPitch + mz * cosRoll * sinPitch;
-            const yh = my * cosRoll - mz * sinRoll;
-
-            // Raw heading before relative zero offset is applied
-            let rawHeading = Math.atan2(-yh, xh) * 180 / Math.PI;
-            if (rawHeading < 0) {
-              rawHeading += 360;
-            }
-            rawHeadingRef.current = rawHeading;
-
-            // Apply heading zero offset (zeroing alignment)
-            compassHeading = (rawHeading - calParams.headingOffset + 360) % 360;
-
-            // Smooth compass readings with a wrap-around-aware low-pass filter to eliminate jitter
-            if (compassHeadingRef.current === null) {
-              compassHeadingRef.current = compassHeading;
-            } else {
-              let headingDiff = compassHeading - compassHeadingRef.current;
-              if (headingDiff > 180) headingDiff -= 360;
-              if (headingDiff < -180) headingDiff += 360;
-              // 8% weight on new values for robust and smooth drift/jitter damping
-              compassHeadingRef.current = (compassHeadingRef.current + headingDiff * 0.08 + 360) % 360;
-            }
-            compassHeading = compassHeadingRef.current;
-          }
-
-          let nextYaw = boardYawRef.current;
-          if (data.sensors.gyro) {
-            const gz = Number(data.sensors.gyro.z) || 0;
-            // Apply a noise gate to ignore drift when stationary
-            if (Math.abs(gz) > 1.5) {
-              nextYaw = nextYaw - gz * dt;
-            }
-          }
-
-          // Fuse compass heading using complementary filter to resolve gyro Z-axis drift
-          if (mag.x !== 0 || mag.y !== 0 || mag.z !== 0) {
-            let diff = compassHeading - nextYaw;
-            if (diff > 180) diff -= 360;
-            if (diff < -180) diff += 360;
-            nextYaw = nextYaw + diff * 0.08; // 8% pull towards absolute compass heading
-          }
-          nextYaw = (nextYaw + 360) % 360;
-          boardYawRef.current = nextYaw;
-          setBoardYaw(nextYaw);
-
-          // Apply low-pass filter (exponential smoothing) to filter raw accelerometer/gyro/yaw jitter
-          const alpha = 0.20; // 20% new value, 80% old value
-          const smoothedPitch = alpha * pitchRaw + (1 - alpha) * smoothedRef.current.pitch;
-          const smoothedRoll = alpha * rollRaw + (1 - alpha) * smoothedRef.current.roll;
-
-          // Correctly handle yaw wrap-around (0 <=> 360 transition) to prevent spin-around glitch
-          let diffYaw = nextYaw - smoothedRef.current.yaw;
-          if (diffYaw > 180) diffYaw -= 360;
-          if (diffYaw < -180) diffYaw += 360;
-          const smoothedYaw = (smoothedRef.current.yaw + alpha * diffYaw + 360) % 360;
-
-          smoothedRef.current = { pitch: smoothedPitch, roll: smoothedRoll, yaw: smoothedYaw };
-          setSmoothedOrientation({ pitch: smoothedPitch, roll: smoothedRoll, yaw: smoothedYaw });
-
-          // Estimate local velocity and distance from accelerometer using LPF gravity/bias tracking
-          if (!accelBiasRef.current) {
-            accelBiasRef.current = { x: accel.x, y: accel.y };
-          } else {
-            // Slow low-pass filter to track stationary/slowly changing gravity components (tilt)
-            accelBiasRef.current.x = accelBiasRef.current.x * 0.98 + accel.x * 0.02;
-            accelBiasRef.current.y = accelBiasRef.current.y * 0.98 + accel.y * 0.02;
-          }
-
-          // Subtract gravity/tilt offset to get dynamic linear acceleration in local frame
-          const linAx = ((accel.x - accelBiasRef.current.x) / 1000) * 9.8;
-          const linAy = ((accel.y - accelBiasRef.current.y) / 1000) * 9.8;
-
-          // Save current raw accelerometer reading for reference/compat
-          lastAccelRef.current = accel;
-
-          // Noise gate to suppress drift from small vibrations/sensor noise
-          const accelThreshold = 0.12; 
-          let instAx = Math.abs(linAx) > accelThreshold ? linAx : 0;
-          let instAy = Math.abs(linAy) > accelThreshold ? linAy : 0;
-
-          // Integrate acceleration to estimate velocity vector (local coordinates)
-          localVelRef.current.x += instAx * dt;
-          localVelRef.current.y += instAy * dt;
-
-          // Leaky integrator decay to pull velocity back to zero when movement stops
-          localVelRef.current.x *= 0.95;
-          localVelRef.current.y *= 0.95;
-
-          const speed = Math.sqrt(localVelRef.current.x * localVelRef.current.x + localVelRef.current.y * localVelRef.current.y);
-
-          // Integrate speed over time to track total estimated travel distance
-          distanceRef.current += speed * dt;
-
-          const dirAngle = Math.atan2(localVelRef.current.y, localVelRef.current.x) * 180 / Math.PI;
-
-          setMotionStats({
-            speed: speed,
-            distance: distanceRef.current,
-            dirAngle: dirAngle,
-            compassHeading: compassHeading
-          });
-        }
       } catch (err) {
         console.error('Error parsing SSE telemetry payload:', err);
       }
     };
 
-    // Update timestamp even if no packets are received, to keep dt accurate
-    const tickInterval = setInterval(() => {
-      lastUpdateRef.current = Date.now();
-    }, 100);
-
     return () => {
       eventSource.close();
-      clearInterval(tickInterval);
     };
   }, []);
-
-
-
 
   // Poll server status
   useEffect(() => {
@@ -280,16 +198,6 @@ function App() {
         if (res.ok) {
           const data = await res.json();
           setStatus(data);
-          // Auto reset flash states if a camera disconnects
-          setFlashStates(prev => {
-            const next = { ...prev };
-            Object.keys(data.cameras || {}).forEach(name => {
-              if (!data.cameras[name].connected) {
-                next[name] = false;
-              }
-            });
-            return next;
-          });
         } else {
           setStatus(prev => ({ ...prev, isHostSecure: false, hostSsid: 'Unverified' }));
         }
@@ -301,20 +209,18 @@ function App() {
           hostSsid: 'Server Offline',
           cameras: {
             esp32cam: { connected: false, ip: null, ssid: null },
-            'espcam-seeed': { connected: false, ip: null, ssid: null },
-            'waveshare-esp32': { connected: false, ip: null, ssid: null, sensors: null }
+            'maker-esp32': { connected: false, ip: null, ssid: null, sensors: null }
           }
         }));
       }
     };
-
 
     fetchStatus();
     const statusInterval = setInterval(fetchStatus, 2000);
     return () => clearInterval(statusInterval);
   }, []);
 
-  // Update clock
+  // Clock tick
   useEffect(() => {
     const clockInterval = setInterval(() => {
       setSystemTime(new Date().toLocaleTimeString());
@@ -327,14 +233,22 @@ function App() {
     const handleKeyDown = (e) => {
       const key = e.key.toLowerCase();
       if (['w', 'a', 's', 'd'].includes(key)) {
-        setActiveKeys(prev => ({ ...prev, [key]: true }));
+        setActiveKeys(prev => {
+          const next = { ...prev, [key]: true };
+          activeKeysRef.current = next;
+          return next;
+        });
       }
     };
 
     const handleKeyUp = (e) => {
       const key = e.key.toLowerCase();
       if (['w', 'a', 's', 'd'].includes(key)) {
-        setActiveKeys(prev => ({ ...prev, [key]: false }));
+        setActiveKeys(prev => {
+          const next = { ...prev, [key]: false };
+          activeKeysRef.current = next;
+          return next;
+        });
       }
     };
 
@@ -346,66 +260,128 @@ function App() {
     };
   }, []);
 
-  // Update yaw state based on steering inputs (A/D keys or Joystick X displacement)
+  // Gamepad Event Listeners & Detectors
   useEffect(() => {
-    const steeringInterval = setInterval(() => {
-      let delta = 0;
-      if (activeKeys.a) delta = -3;
-      if (activeKeys.d) delta = 3;
-      if (Math.abs(joystickPos.x) > 5) {
-        delta = (joystickPos.x / 40) * 3;
-      }
-      if (delta !== 0) {
-        setTankYaw(prev => (prev + delta + 360) % 360);
-      }
-    }, 30);
-    return () => clearInterval(steeringInterval);
-  }, [activeKeys, joystickPos]);
+    const handleGamepadConnected = (e) => {
+      console.log(`Gamepad connected at index ${e.gamepad.index}: ${e.gamepad.id}`);
+      gamepadIndexRef.current = e.gamepad.index;
+      setGamepadActive(true);
+      setActiveStatusMessage(`Xbox Controller connected: ${e.gamepad.id}`);
+      setStatusColorClass("stat-val success");
+    };
 
-
-  const handleToggleCalibration = () => {
-    if (calibrating) {
-      // Save calibration
-      if (calMaxRef.current.x > calMinRef.current.x && calMaxRef.current.y > calMinRef.current.y) {
-        const offsetX = (calMaxRef.current.x + calMinRef.current.x) / 2;
-        const offsetY = (calMaxRef.current.y + calMinRef.current.y) / 2;
-        const rangeX = (calMaxRef.current.x - calMinRef.current.x) / 2;
-        const rangeY = (calMaxRef.current.y - calMinRef.current.y) / 2;
-        const avgRange = (rangeX + rangeY) / 2;
-        const scaleX = rangeX > 0 ? avgRange / rangeX : 1;
-        const scaleY = rangeY > 0 ? avgRange / rangeY : 1;
-
-        const newParams = { ...calParams, offsetX, offsetY, scaleX, scaleY };
-        setCalParams(newParams);
-        localStorage.setItem('waveshare_compass_cal', JSON.stringify(newParams));
-        console.log('Compass calibrated successfully:', newParams);
+    const handleGamepadDisconnected = (e) => {
+      if (gamepadIndexRef.current === e.gamepad.index) {
+        console.log("Gamepad disconnected");
+        gamepadIndexRef.current = null;
+        setGamepadActive(false);
+        sendStopCommand();
+        setActiveStatusMessage("Xbox Controller disconnected.");
+        setStatusColorClass("stat-val warning");
       }
-      setCalibrating(false);
-    } else {
-      // Start calibration
-      calMinRef.current = { x: Infinity, y: Infinity };
-      calMaxRef.current = { x: -Infinity, y: -Infinity };
-      setCalibrating(true);
+    };
+
+    window.addEventListener("gamepadconnected", handleGamepadConnected);
+    window.addEventListener("gamepaddisconnected", handleGamepadDisconnected);
+
+    // Initial check for already connected gamepads
+    const gamepads = navigator.getGamepads ? navigator.getGamepads() : [];
+    for (let i = 0; i < gamepads.length; i++) {
+      if (gamepads[i]) {
+        gamepadIndexRef.current = i;
+        setGamepadActive(true);
+        setActiveStatusMessage(`Xbox Controller detected: ${gamepads[i].id}`);
+        setStatusColorClass("stat-val success");
+        break;
+      }
     }
-  };
 
-  const handleZeroHeading = () => {
-    if (rawHeadingRef.current !== null) {
-      const newParams = { ...calParams, headingOffset: rawHeadingRef.current };
-      setCalParams(newParams);
-      localStorage.setItem('waveshare_compass_cal', JSON.stringify(newParams));
-      console.log('Compass heading zeroed:', rawHeadingRef.current);
-    }
-  };
+    return () => {
+      window.removeEventListener("gamepadconnected", handleGamepadConnected);
+      window.removeEventListener("gamepaddisconnected", handleGamepadDisconnected);
+    };
+  }, []);
 
-  // Interactive Joystick Handling
+  // Unified driving & joystick animation/polling loop
+  useEffect(() => {
+    let animationFrameId;
+
+    const updateDrive = () => {
+      // Priority 1: User dragging the UI virtual joystick
+      if (isDragging) {
+        const x = joystickPos.x / 30;
+        const y = -joystickPos.y / 30;
+        sendDriveCommand(x, y);
+      }
+      // Priority 2: Xbox Gamepad input
+      else if (gamepadIndexRef.current !== null) {
+        const gamepads = navigator.getGamepads ? navigator.getGamepads() : [];
+        const gp = gamepads[gamepadIndexRef.current];
+        if (gp) {
+          let x = gp.axes[0];
+          let y = -gp.axes[1]; // Negate Y so up is positive
+
+          // Apply deadzone
+          const deadzone = 0.15;
+          if (Math.abs(x) < deadzone) x = 0;
+          else x = (x - Math.sign(x) * deadzone) / (1 - deadzone);
+
+          if (Math.abs(y) < deadzone) y = 0;
+          else y = (y - Math.sign(y) * deadzone) / (1 - deadzone);
+
+          if (x !== 0 || y !== 0) {
+            sendDriveCommand(x, y);
+            updateJoystickPosState(x * 30, -y * 30);
+          } else {
+            // Gamepad is idle, fallback to keyboard
+            pollKeyboardInput();
+          }
+        } else {
+          pollKeyboardInput();
+        }
+      }
+      // Priority 3: Keyboard input (WASD)
+      else {
+        pollKeyboardInput();
+      }
+
+      animationFrameId = requestAnimationFrame(updateDrive);
+    };
+
+    const pollKeyboardInput = () => {
+      let y = 0;
+      let x = 0;
+      if (activeKeysRef.current.w) y = 1.0;
+      else if (activeKeysRef.current.s) y = -1.0;
+      if (activeKeysRef.current.a) x = -1.0;
+      else if (activeKeysRef.current.d) x = 1.0;
+
+      sendDriveCommand(x, y);
+      updateJoystickPosState(x * 30, -y * 30);
+    };
+
+    const updateJoystickPosState = (newX, newY) => {
+      if (Math.abs(newX - lastJoystickPosRef.current.x) > 0.1 || Math.abs(newY - lastJoystickPosRef.current.y) > 0.1) {
+        lastJoystickPosRef.current = { x: newX, y: newY };
+        setJoystickPos({ x: newX, y: newY });
+      }
+    };
+
+    animationFrameId = requestAnimationFrame(updateDrive);
+    return () => {
+      cancelAnimationFrame(animationFrameId);
+    };
+  }, [isDragging, joystickPos]);
+
+  // Pointer joystick controls
   const handlePointerDown = (e) => {
+    if (!isVerified) return;
     setIsDragging(true);
     e.target.setPointerCapture(e.pointerId);
   };
 
   const handlePointerMove = (e) => {
-    if (!isDragging || !joystickRef.current) return;
+    if (!isDragging || !joystickRef.current || !isVerified) return;
     
     const rect = joystickRef.current.getBoundingClientRect();
     const centerX = rect.width / 2;
@@ -430,33 +406,19 @@ function App() {
     setJoystickPos({ x: 0, y: 0 });
   };
 
-  // Toggle Camera Flash LED
-  const toggleFlash = async (deviceName) => {
-    const cam = status.cameras?.[deviceName];
-    if (!cam || !cam.connected || !status.isHostSecure) return;
-    
-    const nextState = !flashStates[deviceName];
-    try {
-      const res = await fetch(`/api/control?device=${deviceName}&var=flash&val=${nextState ? 1 : 0}`);
-      if (res.ok) {
-        setFlashStates(prev => ({ ...prev, [deviceName]: nextState }));
-      } else {
-        console.error(`Failed to toggle camera flash for ${deviceName}`);
-      }
-    } catch (err) {
-      console.error(`Error toggling flash for ${deviceName}:`, err);
-    }
-  };
-
+  // Drive sender proxy
   const sendDriveCommand = (x, y) => {
-    // Safety check: Completely ignore drive inputs if the browser tab is hidden/backgrounded
-    if (document.hidden) return;
+    const isStop = x === 0 && y === 0;
 
-    const cam = statusRef.current.cameras?.['waveshare-esp32'];
-    if (!statusRef.current.isHostSecure || !cam?.connected) return;
+    // Safety Lockout: Ignore active drive commands if not verified
+    if (!isVerified && !isStop) return;
+    if (isTestRunning && !isStop) return;
+    if (document.hidden && !isStop) return;
+
+    const cam = statusRef.current.cameras?.['maker-esp32'];
+    if (!isStop && (!statusRef.current.isHostSecure || !cam?.connected)) return;
 
     const now = Date.now();
-    const isStop = x === 0 && y === 0;
     const wasStop = lastSentXRef.current === 0 && lastSentYRef.current === 0;
     const hasMovedSignificantly = Math.abs(x - lastSentXRef.current) > 0.02 || Math.abs(y - lastSentYRef.current) > 0.02;
     const needsHeartbeat = !isStop && (now - lastSendTimeRef.current > 350);
@@ -470,179 +432,96 @@ function App() {
       lastSentYRef.current = y;
       lastSendTimeRef.current = now;
       
-      fetch(`/api/drive?x=${x.toFixed(2)}&y=${y.toFixed(2)}`)
-        .catch(err => {
-          console.error('Failed to send drive command:', err);
-        });
-    }
-  };
-
-  // Keyboard driving hook (updates the visualizer, which then triggers the joystick driving hook)
-  useEffect(() => {
-    if (gamepadIndexRef.current !== null) return;
-
-    let y = 0;
-    let x = 0;
-
-    if (activeKeys.w) y = 1.0;
-    else if (activeKeys.s) y = -1.0;
-
-    if (activeKeys.a) x = -1.0;
-    else if (activeKeys.d) x = 1.0;
-
-    setJoystickPos({ x: x * 30, y: -y * 30 });
-  }, [activeKeys]);
-
-  // Joystick driving hook
-  useEffect(() => {
-    if (gamepadIndexRef.current !== null) return;
-
-    if (joystickPos.x === 0 && joystickPos.y === 0) {
-      sendDriveCommand(0, 0);
-      return;
-    }
-
-    const x = joystickPos.x / 30;
-    const y = -joystickPos.y / 30;
-    sendDriveCommand(x, y);
-  }, [joystickPos]);
-
-  // Gamepad Loop & Hook
-  useEffect(() => {
-    const handleConnected = (e) => {
-      console.log("Gamepad connected:", e.gamepad.id);
-      gamepadIndexRef.current = e.gamepad.index;
-      setGamepadActive(true);
-    };
-
-    const handleDisconnected = () => {
-      console.log("Gamepad disconnected");
-      gamepadIndexRef.current = null;
-      setGamepadActive(false);
-      setJoystickPos({ x: 0, y: 0 }); // Reset visualizer on disconnect
-      sendDriveCommand(0, 0);
-    };
-
-    window.addEventListener("gamepadconnected", handleConnected);
-    window.addEventListener("gamepaddisconnected", handleDisconnected);
-
-    let frameId;
-    const scanGamepad = () => {
-      if (gamepadIndexRef.current !== null) {
-        const gamepads = navigator.getGamepads();
-        const gp = gamepads[gamepadIndexRef.current];
-        if (gp) {
-          let rawX = gp.axes[0];
-          let rawY = -gp.axes[1];
-
-          const dpadUp = gp.buttons[12]?.pressed;
-          const dpadDown = gp.buttons[13]?.pressed;
-          const dpadLeft = gp.buttons[14]?.pressed;
-          const dpadRight = gp.buttons[15]?.pressed;
-
-          if (dpadUp) rawY = 1.0;
-          else if (dpadDown) rawY = -1.0;
-          
-          if (dpadLeft) rawX = -1.0;
-          else if (dpadRight) rawX = 1.0;
-
-          // Increased deadzone to 10% (0.10) to safely filter out analog stick drift/jitter
-          const deadzone = 0.10;
-          let x = 0;
-          let y = 0;
-
-          if (Math.abs(rawX) > deadzone) {
-            x = Math.sign(rawX) * ((Math.abs(rawX) - deadzone) / (1.0 - deadzone));
-          }
-          if (Math.abs(rawY) > deadzone) {
-            y = Math.sign(rawY) * ((Math.abs(rawY) - deadzone) / (1.0 - deadzone));
-          }
-
-          // Update virtual joystick visual position to mimic deadzone-adjusted axes
-          // Scale controller axes to match the 30px visualizer radius
-          setJoystickPos({ x: x * 30, y: -y * 30 });
-
-          sendDriveCommand(x, y);
-        }
+      if (isStop) {
+        fetch('/api/stop').catch(() => {});
+      } else {
+        fetch(`/api/drive?x=${x.toFixed(2)}&y=${y.toFixed(2)}`).catch(() => {});
       }
-      frameId = requestAnimationFrame(scanGamepad);
-    };
-
-    frameId = requestAnimationFrame(scanGamepad);
-
-    return () => {
-      window.removeEventListener("gamepadconnected", handleConnected);
-      window.removeEventListener("gamepaddisconnected", handleDisconnected);
-      cancelAnimationFrame(frameId);
-    };
-  }, []);
-
-  // Motor Calibration functions
-  const sendPWM = async (motor, value) => {
-    try {
-      const res = await fetch(`/api/set_pwm?motor=${motor}&val=${value}`);
-      if (!res.ok) throw new Error("HTTP error");
-      setActiveTuningStatus(`Live Tuning: ${motor.toUpperCase()} at PWM ${value}`);
-      setActiveTuningColor('stat-val success');
-    } catch (err) {
-      setActiveTuningStatus('Error: Connection lost!');
-      setActiveTuningColor('stat-val danger');
     }
   };
 
-  const adjustPWM = (motor, amount) => {
-    if (motor === 'left') {
-      const newVal = Math.max(0, Math.min(255, tuningLeftPWM + amount));
-      setTuningLeftPWM(newVal);
-      sendPWM('left', newVal);
-    } else {
-      const newVal = Math.max(0, Math.min(255, tuningRightPWM + amount));
-      setTuningRightPWM(newVal);
-      sendPWM('right', newVal);
-    }
-  };
-
-  const stopMotors = async () => {
-    try {
-      setTuningLeftPWM(0);
-      setTuningRightPWM(0);
-      await Promise.all([
-        fetch('/api/set_pwm?motor=left&val=0'),
-        fetch('/api/set_pwm?motor=right&val=0')
-      ]);
-      setActiveTuningStatus('Motors stopped.');
-      setActiveTuningColor('');
-    } catch (err) {
-      setActiveTuningStatus('Error: Failed to stop motors.');
-      setActiveTuningColor('stat-val danger');
-    }
-  };
-
-  const saveCalibration = async () => {
-    try {
-      setActiveTuningStatus('Saving to NVS...');
-      const res = await fetch(`/api/save?left=${tuningLeftPWM}&right=${tuningRightPWM}`);
-      if (!res.ok) throw new Error("HTTP error");
-      
-      setTuningLeftPWM(0);
-      setTuningRightPWM(0);
-      setActiveTuningStatus('Calibration Saved! Motors Stopped.');
-      setActiveTuningColor('stat-val success');
-    } catch (err) {
-      setActiveTuningStatus('Error: Failed to save calibration.');
-      setActiveTuningColor('stat-val danger');
-    }
-  };
-
+  // Speed Limit slider updates
   const handleSpeedLimitChange = async (e) => {
     const val = parseInt(e.target.value);
-    setSpeedLimit(val);
+    // Enforce safety cap if unverified
+    const cappedVal = !isVerified ? Math.min(80, val) : val;
+    setSpeedLimit(cappedVal);
     try {
-      await fetch(`/api/speed?val=${val}`);
+      await fetch(`/api/speed?val=${cappedVal}`);
     } catch (err) {
       console.error('Failed to update speed limit:', err);
     }
   };
+
+  // LED Studio trigger
+  const applyLedColor = async (colorHex) => {
+    const cam = status.cameras?.['maker-esp32'];
+    if (!cam || !cam.connected || !status.isHostSecure) {
+      setActiveStatusMessage("Error: ESP Maker Board disconnected!");
+      setStatusColorClass("stat-val danger");
+      return;
+    }
+    
+    try {
+      const cleanHex = colorHex.replace('#', '');
+      let endpoint = `/api/led?hex=${cleanHex}`;
+      if (selectedLed !== -1) {
+        endpoint += `&index=${selectedLed}`;
+      }
+      const res = await fetch(endpoint);
+      if (res.ok) {
+        setActiveStatusMessage(selectedLed === -1 ? `All LEDs set to #${cleanHex}` : `LED ${selectedLed} set to #${cleanHex}`);
+        setStatusColorClass("stat-val success");
+      }
+    } catch (err) {
+      console.error('LED control error:', err);
+    }
+  };
+
+  const handleCheckboxChange = (key, val) => {
+    setTestChecklist(prev => {
+      const updated = { ...prev, [key]: val };
+      return updated;
+    });
+  };
+
+  const verifySafetyConfirm = () => {
+    if (testChecklist.leftFwd && testChecklist.leftRev && testChecklist.rightFwd && testChecklist.rightRev) {
+      setIsVerified(true);
+      localStorage.setItem('maker_tank_verified', 'true');
+      setSpeedLimit(191);
+      fetch(`/api/speed?val=191`).catch(() => {});
+      setActiveStatusMessage("Verification complete! System unlocked.");
+      setStatusColorClass("stat-val success");
+    } else {
+      alert("Please execute and pass all 4 directional tests before unlocking normal driving.");
+    }
+  };
+
+  const resetSafetyVerification = () => {
+    setIsVerified(false);
+    localStorage.removeItem('maker_tank_verified');
+    setTestChecklist({
+      leftFwd: false,
+      leftRev: false,
+      rightFwd: false,
+      rightRev: false
+    });
+    setSpeedLimit(80);
+    fetch(`/api/speed?val=80`).catch(() => {});
+    setActiveStatusMessage("Safety verification reset. Main controls locked.");
+    setStatusColorClass("stat-val warning");
+  };
+
+  // Extract variables
+  const makerCam = status.cameras?.['maker-esp32'];
+  const motorSpeeds = makerCam?.sensors?.motors || [0, 0, 0, 0];
+  const ledColors = makerCam?.sensors?.leds || [
+    { r: 0, g: 0, b: 0 },
+    { r: 0, g: 0, b: 0 },
+    { r: 0, g: 0, b: 0 },
+    { r: 0, g: 0, b: 0 }
+  ];
 
   return (
     <>
@@ -650,323 +529,310 @@ function App() {
         <div className="logo-container">
           <span className="logo-icon">🤖</span>
           <div>
-            <h1>ESPCam Tank Console</h1>
+            <h1>Maker-ESP32 Cockpit Console</h1>
           </div>
         </div>
         <div className="sys-info">
           <div className="info-tag">TIME: {systemTime}</div>
-          <div className={`info-tag ${gamepadActive ? 'stat-val success' : 'stat-val warning'}`}>
-            GAMEPAD: {gamepadActive ? 'CONNECTED' : 'DISCONNECTED'}
-          </div>
           <div className={`info-tag ${status.isHostSecure ? 'stat-val success' : 'stat-val danger'}`}>
             NET: {status.isHostSecure ? 'VERIFIED' : 'UNSECURE'}
+          </div>
+          <div className={`info-tag ${isVerified ? 'stat-val success' : 'stat-val warning'}`}>
+            SAFETY: {isVerified ? 'VERIFIED & UNLOCKED' : 'LOCKED'}
           </div>
         </div>
       </header>
 
       <main className="dashboard">
-        {/* Left Video Stream Area (Multi-feed Grid) */}
-        <section className="feeds-grid">
-          {Object.entries(status.cameras || {}).map(([deviceName, cam]) => {
-            const displayName =
-              deviceName === 'esp32cam' ? 'ESP32-CAM (AI-Thinker)' :
-              deviceName === 'espcam-seeed' ? 'espcam-seeed (XIAO)' :
-              'Waveshare ESP32 General Driver';
-            return (
-              <div key={deviceName} className={`glass-panel feed-container ${deviceName === 'waveshare-esp32' ? 'waveshare-esp32-feed' : ''}`}>
-                <div className="feed-header">
-                  <div className="feed-title">
-                    {cam.connected && status.isHostSecure && <span className="feed-title-dot" />}
-                    <span>{displayName}</span>
-                  </div>
-                  {cam.connected && status.isHostSecure && (
-                    <div style={{ fontFamily: 'var(--font-mono)', fontSize: '0.8rem', color: 'var(--color-primary)' }}>
-                      IP: {cam.ip} | {cam.ssid}
-                    </div>
-                  )}
+        {/* Main Console feeds */}
+        <section className="feeds-grid" style={{ gridTemplateRows: '1fr 1fr' }}>
+          {/* Top-Left: Camera Feed */}
+          <div className="glass-panel feed-container">
+            <div className="feed-header">
+              <div className="feed-title">
+                {status.cameras?.esp32cam?.connected && status.isHostSecure && <span className="feed-title-dot" />}
+                <span>ESP32-CAM (AI-Thinker Stream)</span>
+              </div>
+              {status.cameras?.esp32cam?.connected && status.isHostSecure && (
+                <div style={{ fontFamily: 'var(--font-mono)', fontSize: '0.8rem', color: 'var(--color-primary)' }}>
+                  IP: {status.cameras.esp32cam.ip}
                 </div>
-
-                <div className="feed-body">
-                  {!status.isHostSecure ? (
-                    <div className="warning-screen">
-                      <div className="warning-icon">⚠</div>
-                      <h2 className="warning-title">Not on verified safe network</h2>
-                      <p className="warning-desc">
-                        Connection blocked. Current network SSID <strong style={{color: 'var(--color-warning)'}}>'{status.hostSsid}'</strong> is unverified.
-                        The system will only operate when connected to Pumpkinpie or Dobby.
-                      </p>
-                    </div>
-                  ) : !cam.connected ? (
-                    <div style={{ textAlign: 'center', fontFamily: 'var(--font-mono)' }}>
-                      <div className="warning-icon" style={{ color: 'var(--color-accent)', animation: 'pulse 1.5s infinite' }}>📡</div>
-                      <div style={{ textTransform: 'uppercase', letterSpacing: '2px', fontWeight: 'bold' }}>Waiting for {deviceName}...</div>
-                      <div style={{ color: 'var(--text-muted)', fontSize: '0.85rem', marginTop: '5px' }}>
-                        Make sure the device is powered, connected to Pumpkinpie or Dobby, and sending UDP beacons.
-                      </div>
-                    </div>
-                  ) : deviceName === 'waveshare-esp32' ? (
-                    (() => {
-                      const accel = cam.sensors?.accel || { x: 0, y: 0, z: 9.8 };
-                      const pitchRad = Math.atan2(-accel.x, Math.sqrt(accel.y * accel.y + accel.z * accel.z));
-                      const rollRad = Math.atan2(accel.y, accel.z);
-                      const pitchDeg = Math.round((pitchRad * 180) / Math.PI);
-                      const rollDeg = Math.round((rollRad * 180) / Math.PI);
-
-                      // Determine current active movement direction and speed (hybrid commanded + raw IMU)
-                      let arrowDirAngle = motionStats.dirAngle;
-                      let arrowSpeed = motionStats.speed;
-                      let isMoving = arrowSpeed > 0.05;
-
-                      if (activeKeys.w || activeKeys.s || activeKeys.a || activeKeys.d) {
-                        let dx = 0;
-                        let dy = 0;
-                        if (activeKeys.w) dy = 1;
-                        if (activeKeys.s) dy = -1;
-                        if (activeKeys.a) dx = -1;
-                        if (activeKeys.d) dx = 1;
-                        arrowDirAngle = Math.atan2(dy, dx) * 180 / Math.PI;
-                        isMoving = true;
-                        if (arrowSpeed < 0.1) arrowSpeed = 0.25;
-                      } else if (Math.abs(joystickPos.x) > 2 || Math.abs(joystickPos.y) > 2) {
-                        arrowDirAngle = Math.atan2(-joystickPos.y, joystickPos.x) * 180 / Math.PI;
-                        isMoving = true;
-                        if (arrowSpeed < 0.1) arrowSpeed = 0.25;
-                      }
-
-                      return (
-                        <div className="waveshare-telemetry-container">
-                          {/* Left: 3D Visualizer Viewport */}
-                          <div className="tank-3d-viewport">
-                            {/* Circular Compass Dial on the Border */}
-                            <div className={`compass-dial-border ${calibrating ? 'calibrating' : ''}`}>
-                              <span className="cardinal-label n">N</span>
-                              <span className="cardinal-label e">E</span>
-                              <span className="cardinal-label s">S</span>
-                              <span className="cardinal-label w">W</span>
-                              
-                              {/* 30-degree Tickers */}
-                              {[30, 60, 120, 150, 210, 240, 300, 330].map(deg => (
-                                <div 
-                                  key={deg} 
-                                  className="compass-ticker" 
-                                  style={{ transform: `rotate(${deg}deg)` }}
-                                />
-                              ))}
-
-                              {/* Active Red Heading Pointer on the Border */}
-                              <div 
-                                className="compass-pointer-container"
-                                style={{ transform: `rotate(${motionStats.compassHeading || 0}deg)` }}
-                              >
-                                <div className="compass-pointer-red" />
-                              </div>
-                            </div>
-
-                            <div 
-                              className="tank-3d-scene"
-                              style={{
-                                transform: `rotateX(${60 - smoothedOrientation.pitch}deg) rotateY(${smoothedOrientation.roll}deg) rotateZ(${tankYaw + smoothedOrientation.yaw}deg)`
-                              }}
-                            >
-                              {/* Chassis */}
-                              <div className="tank-chassis">
-                                <div className="face front">FRONT</div>
-                                <div className="face back">BACK</div>
-                                <div className="face left" />
-                                <div className="face right" />
-                                <div className="face top" />
-                                <div className="face bottom" />
-                              </div>
-                              {/* Track Left */}
-                              <div className="tank-track left-track">
-                                <div className="face front" />
-                                <div className="face back" />
-                                <div className="face left" />
-                                <div className="face right" />
-                                <div className="face top" />
-                                <div className="face bottom" />
-                              </div>
-                              {/* Track Right */}
-                              <div className="tank-track right-track">
-                                <div className="face front" />
-                                <div className="face back" />
-                                <div className="face left" />
-                                <div className="face right" />
-                                <div className="face top" />
-                                <div className="face bottom" />
-                              </div>
-                              {/* Turret */}
-                              <div className="tank-turret">
-                                <div className="face front" />
-                                <div className="face back" />
-                                <div className="face left" />
-                                <div className="face right" />
-                                <div className="face top" />
-                                <div className="face bottom" />
-                                {/* Barrel */}
-                                <div className="tank-barrel" />
-                              </div>
-
-                              {/* Facing Direction Arrow (Red) */}
-                              <div 
-                                className="tank-facing-arrow"
-                                style={{
-                                  transform: `translateZ(-14px) rotateZ(0deg) scale(0.9)`
-                                }}
-                              />
-
-                              {/* Glowing 3D Vector Direction Arrow */}
-                              {isMoving && (
-                                <div 
-                                  className="tank-direction-arrow"
-                                  style={{
-                                    transform: `translateZ(-14px) rotateZ(${90 - arrowDirAngle}deg) scale(${Math.min(1.5, 0.6 + arrowSpeed * 2.5)})`,
-                                    opacity: Math.min(1, 0.4 + arrowSpeed * 3)
-                                  }}
-                                />
-                              )}
-                            </div>
-                          </div>
-                          
-                          {/* Right: Numerical Metrics */}
-                          <div className="waveshare-telemetry">
-                            <div className="telemetry-header">SYSTEM SENSORS</div>
-                            <div className="telemetry-readout-grid">
-                              <div className="telemetry-readout-box">
-                                <div className="telemetry-label">VOLTAGE</div>
-                                <div className="telemetry-value primary">{cam.sensors?.voltage !== undefined ? `${Number(cam.sensors.voltage).toFixed(2)} V` : '0.00 V'}</div>
-                              </div>
-                              <div className="telemetry-readout-box">
-                                <div className="telemetry-label">CURRENT</div>
-                                <div className="telemetry-value accent">{cam.sensors?.current !== undefined ? `${Number(cam.sensors.current).toFixed(1)} mA` : '0.0 mA'}</div>
-                              </div>
-                              <div className="telemetry-readout-box">
-                                <div className="telemetry-label">POWER</div>
-                                <div className="telemetry-value warning">{cam.sensors?.power !== undefined ? `${Number(cam.sensors.power).toFixed(1)} mW` : '0.0 mW'}</div>
-                              </div>
-                              <div className="telemetry-readout-box">
-                                <div className="telemetry-label">CORE TEMP</div>
-                                <div className="telemetry-value success">{cam.sensors?.temp !== undefined ? `${Number(cam.sensors.temp).toFixed(1)} °C` : '0.0 °C'}</div>
-                              </div>
-                              <div className="telemetry-readout-box">
-                                <div className="telemetry-label">EST. SPEED</div>
-                                <div className="telemetry-value primary">{`${motionStats.speed.toFixed(2)} m/s`}</div>
-                              </div>
-                              <div className="telemetry-readout-box">
-                                <div className="telemetry-label">EST. DISTANCE</div>
-                                <div className="telemetry-value accent">{`${motionStats.distance.toFixed(2)} m`}</div>
-                              </div>
-                              <div className="telemetry-readout-box" style={{ gridColumn: 'span 2' }}>
-                                <div className="telemetry-label">COMPASS HEADING</div>
-                                <div className="telemetry-value warning">
-                                  {motionStats.compassHeading !== undefined ? (
-                                    `${Math.round(motionStats.compassHeading)}° (${getCompassDirection(motionStats.compassHeading)})`
-                                  ) : (
-                                    'N/A'
-                                  )}
-                                </div>
-                              </div>
-                            </div>
-                            <div className="telemetry-status-message" style={{ display: 'flex', justifyContent: 'space-between', padding: '0 5px' }}>
-                              <span>P: {pitchDeg}° | R: {rollDeg}°</span>
-                              <span>Y: {Math.round(tankYaw)}°</span>
-                            </div>
-                          </div>
-                        </div>
-                      );
-                    })()
-                  ) : (
-                    <img
-                      src={`/api/stream?device=${deviceName}`}
-                      alt={`${displayName} Live Feed`}
-                      className="mjpeg-stream"
-                      onError={(e) => {
-                        console.error(`MJPEG Stream error loading for ${deviceName}`);
-                      }}
-                    />
-                  )}
+              )}
+            </div>
+            <div className="feed-body">
+              {!status.isHostSecure ? (
+                <div className="warning-screen">
+                  <div className="warning-icon">⚠</div>
+                  <h2 className="warning-title">Not on verified safe network</h2>
+                  <p className="warning-desc">
+                    Stream blocked. Host network SSID <strong style={{color: 'var(--color-warning)'}}>'{status.hostSsid}'</strong> is unverified.
+                  </p>
                 </div>
-
-                {deviceName !== 'waveshare-esp32' && (
-                  <div className="feed-controls">
-                    <button
-                      onClick={() => toggleFlash(deviceName)}
-                      disabled={!cam.connected || !status.isHostSecure}
-                      className={`flash-btn ${flashStates[deviceName] ? 'active' : 'inactive'}`}
-                    >
-                      🔦 Flash Light: {flashStates[deviceName] ? 'ON' : 'OFF'}
-                    </button>
-                  </div>
-                )}
-              </div>
-            );
-          })}
-        </section>
-
-
-        {/* Right Dashboard Panels */}
-        <aside className="glass-panel">
-          {/* Telemetry Status */}
-          <div className="panel-section">
-            <h3 className="section-title">Telemetry & System</h3>
-            <div className="telemetry-grid">
-              <div className="stat-box">
-                <span className="stat-lbl">Host Net Check</span>
-                <span className={`stat-val ${status.isHostSecure ? 'success' : 'danger'}`}>
-                  {status.isHostSecure ? 'Secure' : 'Unverified'}
-                </span>
-              </div>
-              <div className="stat-box">
-                <span className="stat-lbl">Host Wi-Fi SSID</span>
-                <span className="stat-val" style={{ overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
-                  {status.hostSsid}
-                </span>
-              </div>
-              <div className="stat-box">
-                <span className="stat-lbl">esp32cam Link</span>
-                <span className={`stat-val ${status.cameras?.esp32cam?.connected ? 'success' : 'warning'}`}>
-                  {status.cameras?.esp32cam?.connected ? 'Connected' : 'Offline'}
-                </span>
-              </div>
-              <div className="stat-box">
-                <span className="stat-lbl">seeed Link</span>
-                <span className={`stat-val ${status.cameras?.['espcam-seeed']?.connected ? 'success' : 'warning'}`}>
-                  {status.cameras?.['espcam-seeed']?.connected ? 'Connected' : 'Offline'}
-                </span>
-              </div>
-              <div className="stat-box" style={{ gridColumn: 'span 2' }}>
-                <span className="stat-lbl">waveshare Link</span>
-                <span className={`stat-val ${status.cameras?.['waveshare-esp32']?.connected ? 'success' : 'warning'}`}>
-                  {status.cameras?.['waveshare-esp32']?.connected ? 'Connected' : 'Offline'}
-                </span>
-              </div>
-              <div className="stat-box" style={{ gridColumn: 'span 2' }}>
-                <span className="stat-lbl">esp32cam IP</span>
-                <span className="stat-val active" style={{ fontSize: '0.8rem' }}>
-                  {status.cameras?.esp32cam?.connected ? status.cameras.esp32cam.ip : 'N/A'}
-                </span>
-              </div>
-              <div className="stat-box" style={{ gridColumn: 'span 2' }}>
-                <span className="stat-lbl">espcam-seeed IP</span>
-                <span className="stat-val active" style={{ fontSize: '0.8rem' }}>
-                  {status.cameras?.['espcam-seeed']?.connected ? status.cameras['espcam-seeed'].ip : 'N/A'}
-                </span>
-              </div>
-              <div className="stat-box" style={{ gridColumn: 'span 2' }}>
-                <span className="stat-lbl">waveshare IP</span>
-                <span className="stat-val active" style={{ fontSize: '0.8rem' }}>
-                  {status.cameras?.['waveshare-esp32']?.connected ? status.cameras['waveshare-esp32'].ip : 'N/A'}
-                </span>
-              </div>
-
+              ) : !status.cameras?.esp32cam?.connected ? (
+                <div style={{ textAlign: 'center', fontFamily: 'var(--font-mono)' }}>
+                  <div className="warning-icon" style={{ color: 'var(--color-accent)', animation: 'pulse 1.5s infinite' }}>📡</div>
+                  <div style={{ textTransform: 'uppercase', letterSpacing: '2px', fontWeight: 'bold' }}>Waiting for Camera Connection...</div>
+                </div>
+              ) : (
+                <img
+                  src={`/api/stream?device=esp32cam`}
+                  alt="ESP32-CAM Live Feed"
+                  className="mjpeg-stream"
+                  onError={(e) => console.error("MJPEG stream error")}
+                />
+              )}
             </div>
           </div>
 
-          {/* Driving HUD controls */}
-          <div className="panel-section" style={{ borderTop: '1px solid rgba(255,255,255,0.05)' }}>
-            <h3 className="section-title">Drive Controller HUD</h3>
+          {/* Bottom-Left: ESP Maker Board Panel */}
+          <div className="glass-panel feed-container">
+            <div className="feed-header">
+              <div className="feed-title">
+                {makerCam?.connected && status.isHostSecure && <span className="feed-title-dot" />}
+                <span>ESP Maker Board Dashboard (COM18)</span>
+              </div>
+              {makerCam?.connected && status.isHostSecure && (
+                <div style={{ fontFamily: 'var(--font-mono)', fontSize: '0.8rem', color: 'var(--color-primary)' }}>
+                  IP: {makerCam.ip} | SSID: {makerCam.ssid}
+                </div>
+              )}
+            </div>
+            
+            <div className="feed-body" style={{ background: '#090e16', padding: '20px', flexDirection: 'column', justifyContent: 'space-around', alignItems: 'stretch' }}>
+              {!makerCam?.connected ? (
+                <div style={{ textAlign: 'center', fontFamily: 'var(--font-mono)', width: '100%' }}>
+                  <div className="warning-icon" style={{ color: 'var(--color-warning)', animation: 'pulse 1.5s infinite' }}>🔌</div>
+                  <div style={{ textTransform: 'uppercase', letterSpacing: '2px', fontWeight: 'bold' }}>Waiting for Maker Board Beacons...</div>
+                  <div style={{ fontSize: '0.8rem', color: 'var(--text-muted)', marginTop: '8px' }}>
+                    Confirm the board is powered, flashed on COM18, and connected to WiFi.
+                  </div>
+                </div>
+              ) : (
+                <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '20px', width: '100%', height: '100%', boxSizing: 'border-box' }}>
+                  {/* Motor Telemetry Bars */}
+                  <div style={{ background: 'rgba(0,0,0,0.3)', border: '1px solid rgba(0,242,254,0.1)', borderRadius: '10px', padding: '15px', display: 'flex', flexDirection: 'column', justifyContent: 'space-between' }}>
+                    <div style={{ fontSize: '0.8rem', textTransform: 'uppercase', letterSpacing: '1px', borderBottom: '1px solid rgba(0,242,254,0.1)', paddingBottom: '5px', fontWeight: 'bold', color: 'var(--color-primary)' }}>
+                      🏍️ Motor Drive Outputs
+                    </div>
+                    {motorSpeeds.map((speed, i) => {
+                      const percentage = Math.round((Math.abs(speed) / 255) * 100);
+                      const isFwd = speed >= 0;
+                      return (
+                        <div key={i} style={{ margin: '8px 0' }}>
+                          <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: '0.75rem', fontFamily: 'var(--font-mono)', marginBottom: '3px' }}>
+                            <span>MOTOR M{i+1}</span>
+                            <span style={{ color: speed === 0 ? 'var(--text-muted)' : isFwd ? 'var(--color-success)' : 'var(--color-danger)' }}>
+                              {speed === 0 ? 'STOPPED' : `${isFwd ? '+' : '-'}${percentage}% (${speed})`}
+                            </span>
+                          </div>
+                          <div style={{ height: '8px', background: 'rgba(255,255,255,0.05)', borderRadius: '4px', overflow: 'hidden', position: 'relative' }}>
+                            <div style={{
+                              height: '100%',
+                              width: `${percentage}%`,
+                              background: speed === 0 ? 'transparent' : isFwd ? 'linear-gradient(to right, #00ff87, #60efff)' : 'linear-gradient(to right, #ff4e50, #f9d423)',
+                              transition: 'width 0.2s ease',
+                              borderRadius: '4px'
+                            }} />
+                          </div>
+                        </div>
+                      );
+                    })}
+                  </div>
+
+                  {/* Active RGB LED Indicators */}
+                  <div style={{ background: 'rgba(0,0,0,0.3)', border: '1px solid rgba(0,242,254,0.1)', borderRadius: '10px', padding: '15px', display: 'flex', flexDirection: 'column', justifyContent: 'space-between', alignItems: 'center' }}>
+                    <div style={{ fontSize: '0.8rem', textTransform: 'uppercase', letterSpacing: '1px', borderBottom: '1px solid rgba(0,242,254,0.1)', paddingBottom: '5px', fontWeight: 'bold', color: 'var(--color-accent)', width: '100%', textAlign: 'center' }}>
+                      💡 Onboard NeoPixel status
+                    </div>
+                    <div style={{ display: 'flex', gap: '20px', justifyContent: 'center', margin: '20px 0' }}>
+                      {ledColors.map((led, i) => {
+                        const ledColor = `rgb(${led.r}, ${led.g}, ${led.b})`;
+                        const isOff = led.r === 0 && led.g === 0 && led.b === 0;
+                        return (
+                          <div key={i} style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', gap: '8px' }}>
+                            <div style={{
+                              width: '32px',
+                              height: '32px',
+                              borderRadius: '50%',
+                              background: isOff ? '#1a2230' : ledColor,
+                              border: '2px solid rgba(255,255,255,0.1)',
+                              boxShadow: isOff ? 'none' : `0 0 15px ${ledColor}`,
+                              transition: 'all 0.3s ease'
+                            }} />
+                            <span style={{ fontSize: '0.65rem', fontFamily: 'var(--font-mono)', color: 'var(--text-muted)' }}>LED {i}</span>
+                          </div>
+                        );
+                      })}
+                    </div>
+                    <div style={{ fontSize: '0.75rem', color: 'var(--text-muted)', textAlign: 'center', fontStyle: 'italic' }}>
+                      Updates stream in real-time from target device.
+                    </div>
+                  </div>
+                </div>
+              )}
+            </div>
+          </div>
+        </section>
+
+        {/* Right Dashboard controls Sidebar */}
+        <aside className="glass-panel">
+          {/* Safety Verification Console */}
+          <div className="panel-section" style={{ background: isVerified ? 'transparent' : 'rgba(255,78,80,0.06)' }}>
+            <h3 className="section-title" style={{ color: isVerified ? 'var(--color-success)' : 'var(--color-danger)' }}>
+              {isVerified ? '✓ Safety verification active' : '⚠️ SAFE MOTOR VERIFICATION'}
+            </h3>
+            
+            {!isVerified ? (
+              <div style={{ display: 'flex', flexDirection: 'column', gap: '10px' }}>
+                <div style={{ fontSize: '0.8rem', lineHeight: '1.4', color: 'var(--text-muted)' }}>
+                  <strong>Prerequisite:</strong> Jack up the tank tracks so they rotate freely in mid-air. Trigger each 500ms safety test below at low power, verify correct motion direction, and check off.
+                </div>
+                
+                <div style={{ display: 'flex', flexDirection: 'column', gap: '8px', background: 'rgba(0,0,0,0.2)', padding: '10px', borderRadius: '8px' }}>
+                  {/* Test 1 */}
+                  <div style={{ display: 'flex', alignItems: 'center', justifyBreak: 'space-between', gap: '10px' }}>
+                    <button 
+                      className="hud-btn" 
+                      style={{ flex: 1, fontSize: '0.7rem', padding: '6px' }}
+                      onClick={() => runMotorTest('left', 'forward')}
+                      disabled={isTestRunning}
+                    >
+                      ⚡ Test Left Fwd
+                    </button>
+                    <label style={{ display: 'flex', alignItems: 'center', gap: '5px', fontSize: '0.75rem', cursor: 'pointer' }}>
+                      <input 
+                        type="checkbox" 
+                        checked={testChecklist.leftFwd} 
+                        onChange={(e) => handleCheckboxChange('leftFwd', e.target.checked)}
+                      />
+                      <span>Pass</span>
+                    </label>
+                  </div>
+
+                  {/* Test 2 */}
+                  <div style={{ display: 'flex', alignItems: 'center', gap: '10px' }}>
+                    <button 
+                      className="hud-btn" 
+                      style={{ flex: 1, fontSize: '0.7rem', padding: '6px' }}
+                      onClick={() => runMotorTest('left', 'reverse')}
+                      disabled={isTestRunning}
+                    >
+                      ⚡ Test Left Rev
+                    </button>
+                    <label style={{ display: 'flex', alignItems: 'center', gap: '5px', fontSize: '0.75rem', cursor: 'pointer' }}>
+                      <input 
+                        type="checkbox" 
+                        checked={testChecklist.leftRev} 
+                        onChange={(e) => handleCheckboxChange('leftRev', e.target.checked)}
+                      />
+                      <span>Pass</span>
+                    </label>
+                  </div>
+
+                  {/* Test 3 */}
+                  <div style={{ display: 'flex', alignItems: 'center', gap: '10px' }}>
+                    <button 
+                      className="hud-btn" 
+                      style={{ flex: 1, fontSize: '0.7rem', padding: '6px' }}
+                      onClick={() => runMotorTest('right', 'forward')}
+                      disabled={isTestRunning}
+                    >
+                      ⚡ Test Right Fwd
+                    </button>
+                    <label style={{ display: 'flex', alignItems: 'center', gap: '5px', fontSize: '0.75rem', cursor: 'pointer' }}>
+                      <input 
+                        type="checkbox" 
+                        checked={testChecklist.rightFwd} 
+                        onChange={(e) => handleCheckboxChange('rightFwd', e.target.checked)}
+                      />
+                      <span>Pass</span>
+                    </label>
+                  </div>
+
+                  {/* Test 4 */}
+                  <div style={{ display: 'flex', alignItems: 'center', gap: '10px' }}>
+                    <button 
+                      className="hud-btn" 
+                      style={{ flex: 1, fontSize: '0.7rem', padding: '6px' }}
+                      onClick={() => runMotorTest('right', 'reverse')}
+                      disabled={isTestRunning}
+                    >
+                      ⚡ Test Right Rev
+                    </button>
+                    <label style={{ display: 'flex', alignItems: 'center', gap: '5px', fontSize: '0.75rem', cursor: 'pointer' }}>
+                      <input 
+                        type="checkbox" 
+                        checked={testChecklist.rightRev} 
+                        onChange={(e) => handleCheckboxChange('rightRev', e.target.checked)}
+                      />
+                      <span>Pass</span>
+                    </label>
+                  </div>
+                </div>
+
+                <button 
+                  className="hud-btn" 
+                  style={{ background: 'var(--color-success)', color: '#000', fontWeight: 'bold', border: 'none', padding: '10px' }}
+                  onClick={verifySafetyConfirm}
+                >
+                  🔓 UNLOCK COCKPIT CONTROLS
+                </button>
+              </div>
+            ) : (
+              <div style={{ display: 'flex', flexDirection: 'column', gap: '8px' }}>
+                <div style={{ fontSize: '0.75rem', color: 'var(--color-success)', fontWeight: 'bold' }}>
+                  ✓ System is fully verified. Normal WASD and Joystick speed limits are unlocked.
+                </div>
+                <button 
+                  className="hud-btn warning" 
+                  style={{ padding: '6px 0', fontSize: '0.75rem' }} 
+                  onClick={resetSafetyVerification}
+                >
+                  🔒 Lock & Reset Safety Tests
+                </button>
+              </div>
+            )}
+          </div>
+
+          {/* Drive Controller HUD */}
+          <div className="panel-section" style={{ borderTop: '1px solid rgba(255,255,255,0.05)', position: 'relative' }}>
+            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '10px' }}>
+              <h3 className="section-title" style={{ margin: 0 }}>Drive HUD Controls</h3>
+              {gamepadActive && (
+                <span className="info-tag stat-val success" style={{ fontSize: '0.7rem', padding: '2px 8px', borderRadius: '4px', border: '1px solid var(--color-success)', background: 'rgba(0, 255, 135, 0.1)' }}>
+                  🎮 CONTROLLER ACTIVE
+                </span>
+              )}
+            </div>
+            
+            {/* Safety Lockout Overlay */}
+            {!isVerified && (
+              <div style={{
+                position: 'absolute',
+                top: 0,
+                left: 0,
+                right: 0,
+                bottom: 0,
+                background: 'rgba(10, 14, 20, 0.9)',
+                borderRadius: '8px',
+                zIndex: 10,
+                display: 'flex',
+                flexDirection: 'column',
+                alignItems: 'center',
+                justifyContent: 'center',
+                padding: '20px',
+                textAlign: 'center'
+              }}>
+                <span style={{ fontSize: '2rem', marginBottom: '8px' }}>🔒</span>
+                <span style={{ fontSize: '0.85rem', fontWeight: 'bold', color: 'var(--color-danger)' }}>HUD LOCKED</span>
+                <span style={{ fontSize: '0.7rem', color: 'var(--text-muted)', marginTop: '4px' }}>
+                  Run the safe motor tests above to unlock drive hud.
+                </span>
+              </div>
+            )}
+
             <div className="controls-layout">
-              {/* Keyboard WASD Indicators */}
+              {/* Keyboard WASD */}
               <div style={{ textAlign: 'center' }}>
                 <span className="stat-lbl" style={{ marginBottom: '5px', display: 'block' }}>Keyboard Inputs</span>
                 <div className="wasd-keys">
@@ -977,9 +843,9 @@ function App() {
                 </div>
               </div>
 
-              {/* Joystick simulation */}
-              <div style={{ textAlign: 'center', marginTop: '10px' }}>
-                <span className="stat-lbl" style={{ marginBottom: '10px', display: 'block' }}>Analog Joystick</span>
+              {/* Joystick */}
+              <div style={{ textAlign: 'center', marginTop: '5px' }}>
+                <span className="stat-lbl" style={{ marginBottom: '8px', display: 'block' }}>Analog Joystick</span>
                 <div className="joystick-area" ref={joystickRef}>
                   <div
                     className="joystick-pad"
@@ -993,25 +859,20 @@ function App() {
                     onPointerCancel={handlePointerUp}
                   />
                 </div>
-                {isDragging && (
-                  <div style={{ fontFamily: 'var(--font-mono)', fontSize: '0.75rem', marginTop: '10px', color: 'var(--color-primary)' }}>
-                    X: {Math.round(joystickPos.x)} | Y: {Math.round(-joystickPos.y)}
-                  </div>
-                )}
               </div>
 
               {/* Speed Limit Slider */}
-              <div style={{ padding: '0 10px', marginTop: '5px' }}>
+              <div style={{ padding: '0 5px' }}>
                 <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: '6px' }}>
-                  <span className="stat-lbl">Speed Limit</span>
+                  <span className="stat-lbl">Drive Speed Limit</span>
                   <span className="stat-val active" style={{ fontWeight: 'bold' }}>
                     {Math.round((speedLimit / 255) * 100)}% ({speedLimit})
                   </span>
                 </div>
                 <input 
                   type="range" 
-                  min="80" 
-                  max="255" 
+                  min="40" 
+                  max={isVerified ? 255 : 80} 
                   value={speedLimit} 
                   onChange={handleSpeedLimitChange}
                   style={{ width: '100%', accentColor: 'var(--color-primary)', background: 'rgba(255,255,255,0.1)', height: '4px', borderRadius: '2px', outline: 'none' }}
@@ -1020,119 +881,103 @@ function App() {
             </div>
           </div>
 
-          {/* Compass Calibration Panel */}
+          {/* RGB LED Color Studio */}
           <div className="panel-section" style={{ borderTop: '1px solid rgba(255,255,255,0.05)' }}>
-            <h3 className="section-title">Compass & Orientation</h3>
-            <div className="calibration-instructions">
-              <strong>Rotating Calibration:</strong> Click Calibrate below and rotate the tank 360° horizontally on a flat surface, then click Save.
-            </div>
-            <div className="compass-calibration-controls">
-              <button 
-                className={`hud-btn ${calibrating ? 'active pulse' : ''}`}
-                onClick={handleToggleCalibration}
-              >
-                🔄 {calibrating ? 'SAVE CALIBRATION' : 'START CALIBRATION'}
-              </button>
-              <button 
-                className="hud-btn warning"
-                onClick={handleZeroHeading}
-              >
-                🎯 ZERO HEADING
-              </button>
-            </div>
+            <h3 className="section-title">RGB NeoPixel Studio</h3>
             
-            <div className="calibration-stats-grid">
-              <div className="cal-stat-item" style={{ gridColumn: 'span 2', borderBottom: '1px solid rgba(0, 242, 254, 0.15)', paddingBottom: '4px', marginBottom: '4px', fontWeight: 'bold' }}>
-                ACTIVE CALIBRATION OFFSETS
+            <div style={{ display: 'flex', flexDirection: 'column', gap: '10px' }}>
+              {/* Target LED Selector */}
+              <div>
+                <span className="stat-lbl" style={{ marginBottom: '6px', display: 'block' }}>Target Light Selector</span>
+                <div style={{ display: 'grid', gridTemplateColumns: 'repeat(5, 1fr)', gap: '4px' }}>
+                  {[-1, 0, 1, 2, 3].map(val => (
+                    <button 
+                      key={val} 
+                      className={`hud-btn ${selectedLed === val ? 'active' : ''}`}
+                      style={{ padding: '6px 0', fontSize: '0.65rem' }}
+                      onClick={() => setSelectedLed(val)}
+                    >
+                      {val === -1 ? 'ALL' : `L${val}`}
+                    </button>
+                  ))}
+                </div>
               </div>
-              <div className="cal-stat-item">
-                <span>Offset X:</span>
-                <span className="cal-stat-val">{calParams.offsetX.toFixed(1)}</span>
-              </div>
-              <div className="cal-stat-item">
-                <span>Offset Y:</span>
-                <span className="cal-stat-val">{calParams.offsetY.toFixed(1)}</span>
-              </div>
-              <div className="cal-stat-item">
-                <span>Scale X:</span>
-                <span className="cal-stat-val">{calParams.scaleX.toFixed(2)}</span>
-              </div>
-              <div className="cal-stat-item">
-                <span>Scale Y:</span>
-                <span className="cal-stat-val">{calParams.scaleY.toFixed(2)}</span>
-              </div>
-              <div className="cal-stat-item" style={{ gridColumn: 'span 2', marginTop: '4px', borderTop: '1px dashed rgba(255, 255, 255, 0.1)', paddingTop: '4px' }}>
-                <span>Heading Zero Offset:</span>
-                <span className="cal-stat-val">{calParams.headingOffset.toFixed(1)}°</span>
+
+              {/* Google Presets & Color picker */}
+              <div>
+                <span className="stat-lbl" style={{ marginBottom: '6px', display: 'block' }}>Color Studio Palette</span>
+                <div style={{ display: 'grid', gridTemplateColumns: 'repeat(4, 1fr)', gap: '6px', marginBottom: '10px' }}>
+                  <button className="hud-btn" style={{ padding: '6px 0', background: '#4285F4', color: '#fff', border: 'none', fontSize: '0.7rem' }} onClick={() => applyLedColor('#4285F4')}>Blue</button>
+                  <button className="hud-btn" style={{ padding: '6px 0', background: '#EA4335', color: '#fff', border: 'none', fontSize: '0.7rem' }} onClick={() => applyLedColor('#EA4335')}>Red</button>
+                  <button className="hud-btn" style={{ padding: '6px 0', background: '#FBBC05', color: '#000', border: 'none', fontSize: '0.7rem' }} onClick={() => applyLedColor('#FBBC05')}>Yellow</button>
+                  <button className="hud-btn" style={{ padding: '6px 0', background: '#34A853', color: '#fff', border: 'none', fontSize: '0.7rem' }} onClick={() => applyLedColor('#34A853')}>Green</button>
+                  <button className="hud-btn" style={{ padding: '6px 0', background: '#8e44ad', color: '#fff', border: 'none', fontSize: '0.7rem' }} onClick={() => applyLedColor('#8e44ad')}>Purple</button>
+                  <button className="hud-btn" style={{ padding: '6px 0', background: '#16a085', color: '#fff', border: 'none', fontSize: '0.7rem' }} onClick={() => applyLedColor('#16a085')}>Teal</button>
+                  <button className="hud-btn" style={{ padding: '6px 0', background: '#ffffff', color: '#000', border: 'none', fontSize: '0.7rem' }} onClick={() => applyLedColor('#ffffff')}>White</button>
+                  <button className="hud-btn" style={{ padding: '6px 0', background: '#2c3e50', color: '#fff', border: 'none', fontSize: '0.7rem' }} onClick={() => applyLedColor('#000000')}>Off</button>
+                </div>
+                
+                <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', background: 'rgba(0,0,0,0.2)', padding: '8px', borderRadius: '6px', border: '1px solid rgba(255,255,255,0.05)' }}>
+                  <span style={{ fontSize: '0.75rem', color: 'var(--text-muted)' }}>Custom HEX Color</span>
+                  <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
+                    <input 
+                      type="color" 
+                      value={pickerColor} 
+                      onChange={(e) => setPickerColor(e.target.value)}
+                      style={{ width: '28px', height: '28px', border: 'none', padding: '0', background: 'none', cursor: 'pointer' }}
+                    />
+                    <button 
+                      className="hud-btn" 
+                      style={{ fontSize: '0.7rem', padding: '4px 10px' }}
+                      onClick={() => applyLedColor(pickerColor)}
+                    >
+                      Apply
+                    </button>
+                  </div>
+                </div>
               </div>
             </div>
           </div>
 
-          {/* Motor Driver Calibration Panel */}
-          <div className="panel-section" style={{ borderTop: '1px solid rgba(255,255,255,0.05)' }}>
-            <h3 className="section-title">Motor Driver Calibration</h3>
-            
-            <div className="calibration-stats-grid" style={{ marginBottom: '10px' }}>
-              <div className="cal-stat-item" style={{ gridColumn: 'span 2', borderBottom: '1px solid rgba(0, 242, 254, 0.15)', paddingBottom: '4px', marginBottom: '4px', fontWeight: 'bold' }}>
-                SAVED NVS CALIBRATIONS
-              </div>
-              <div className="cal-stat-item">
-                <span>NVS Min Left:</span>
-                <span className="cal-stat-val">
-                  {status.cameras?.['waveshare-esp32']?.sensors?.calibration?.left ?? 0}
-                </span>
-              </div>
-              <div className="cal-stat-item">
-                <span>NVS Min Right:</span>
-                <span className="cal-stat-val">
-                  {status.cameras?.['waveshare-esp32']?.sensors?.calibration?.right ?? 0}
-                </span>
-              </div>
-            </div>
-
-            {/* Tuning Left */}
-            <div style={{ marginBottom: '10px', background: 'rgba(0,0,0,0.2)', padding: '8px', borderRadius: '6px', border: '1px solid rgba(0,242,254,0.05)' }}>
-              <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: '6px', fontSize: '0.8rem' }}>
-                <span className="stat-lbl">Left Track Min PWM Tuning</span>
-                <span className="stat-val active" style={{ fontWeight: 'bold' }}>{tuningLeftPWM}</span>
-              </div>
-              <div style={{ display: 'grid', gridTemplateColumns: 'repeat(4, 1fr)', gap: '4px' }}>
-                <button className="hud-btn" style={{ padding: '4px 0', fontSize: '0.65rem' }} onClick={() => adjustPWM('left', -5)}>-5</button>
-                <button className="hud-btn" style={{ padding: '4px 0', fontSize: '0.65rem' }} onClick={() => adjustPWM('left', -1)}>-1</button>
-                <button className="hud-btn" style={{ padding: '4px 0', fontSize: '0.65rem' }} onClick={() => adjustPWM('left', 1)}>+1</button>
-                <button className="hud-btn" style={{ padding: '4px 0', fontSize: '0.65rem' }} onClick={() => adjustPWM('left', 5)}>+5</button>
+          {/* System Connections and Emergency Stop */}
+          <div className="panel-section" style={{ borderTop: '1px solid rgba(255,255,255,0.05)', flexGrow: 1, display: 'flex', flexDirection: 'column', justifyContent: 'space-between' }}>
+            <div>
+              <h3 className="section-title">Telemetry & System</h3>
+              <div className="telemetry-grid" style={{ marginTop: '8px' }}>
+                <div className="stat-box">
+                  <span className="stat-lbl">esp32cam Link</span>
+                  <span className={`stat-val ${status.cameras?.esp32cam?.connected ? 'success' : 'warning'}`}>
+                    {status.cameras?.esp32cam?.connected ? 'Online' : 'Offline'}
+                  </span>
+                </div>
+                <div className="stat-box">
+                  <span className="stat-lbl">maker-esp32 Link</span>
+                  <span className={`stat-val ${makerCam?.connected ? 'success' : 'warning'}`}>
+                    {makerCam?.connected ? 'Online' : 'Offline'}
+                  </span>
+                </div>
+                <div className="stat-box" style={{ gridColumn: 'span 2' }}>
+                  <span className="stat-lbl">System Logs / Status</span>
+                  <span className={statusColorClass} style={{ fontSize: '0.75rem', fontFamily: 'var(--font-mono)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+                    {activeStatusMessage}
+                  </span>
+                </div>
               </div>
             </div>
 
-            {/* Tuning Right */}
-            <div style={{ marginBottom: '10px', background: 'rgba(0,0,0,0.2)', padding: '8px', borderRadius: '6px', border: '1px solid rgba(0,242,254,0.05)' }}>
-              <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: '6px', fontSize: '0.8rem' }}>
-                <span className="stat-lbl">Right Track Min PWM Tuning</span>
-                <span className="stat-val active" style={{ fontWeight: 'bold' }}>{tuningRightPWM}</span>
-              </div>
-              <div style={{ display: 'grid', gridTemplateColumns: 'repeat(4, 1fr)', gap: '4px' }}>
-                <button className="hud-btn" style={{ padding: '4px 0', fontSize: '0.65rem' }} onClick={() => adjustPWM('right', -5)}>-5</button>
-                <button className="hud-btn" style={{ padding: '4px 0', fontSize: '0.65rem' }} onClick={() => adjustPWM('right', -1)}>-1</button>
-                <button className="hud-btn" style={{ padding: '4px 0', fontSize: '0.65rem' }} onClick={() => adjustPWM('right', 1)}>+1</button>
-                <button className="hud-btn" style={{ padding: '4px 0', fontSize: '0.65rem' }} onClick={() => adjustPWM('right', 5)}>+5</button>
-              </div>
-            </div>
-
-            {/* Actions */}
-            <div style={{ display: 'flex', gap: '8px' }}>
-              <button className="hud-btn" onClick={saveCalibration}>💾 SAVE</button>
-              <button className="hud-btn active" onClick={stopMotors}>🛑 STOP</button>
-            </div>
-            
-            <div className={`telemetry-status-message ${activeTuningColor}`} style={{ fontSize: '0.75rem', marginTop: '4px' }}>
-              {activeTuningStatus}
-            </div>
+            <button 
+              className="hud-btn active" 
+              style={{ width: '100%', padding: '12px 0', fontSize: '0.9rem', fontWeight: 'bold', background: '#ff453a', border: '1px solid #ff453a', boxShadow: '0 0 10px rgba(255, 69, 58, 0.4)', marginTop: '20px' }}
+              onClick={handleEmergencyStop}
+            >
+              🛑 EMERGENCY STOP ALL
+            </button>
           </div>
         </aside>
       </main>
 
       <footer>
-        🤖 ESP32-CAM Robot Tank control terminal v1.0.0 | Secured by Network Signature Verification
+        🤖 ESP32 Robot Cockpit Console | Flashed on COM18 (Maker Board) & COM6 (Camera)
       </footer>
     </>
   );

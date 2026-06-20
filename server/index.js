@@ -86,7 +86,7 @@ async function checkWifiSSID() {
 const cameras = {
   esp32cam: { ip: null, ssid: null, lastSeen: 0 },
   'espcam-seeed': { ip: null, ssid: null, lastSeen: 0 },
-  'waveshare-esp32': { ip: null, ssid: null, lastSeen: 0, sensors: null }
+  'maker-esp32': { ip: null, ssid: null, lastSeen: 0, sensors: null }
 };
 const UDP_PORT = 3000;
 
@@ -161,7 +161,7 @@ app.get('/api/status', (req, res) => {
   const now = Date.now();
   const esp32camConnected = (now - cameras.esp32cam.lastSeen) < 6000;
   const seeedConnected = (now - cameras['espcam-seeed'].lastSeen) < 6000;
-  const waveshareConnected = (now - cameras['waveshare-esp32'].lastSeen) < 6000;
+  const makerConnected = (now - cameras['maker-esp32'].lastSeen) < 6000;
 
   res.json({
     isHostSecure,
@@ -182,11 +182,11 @@ app.get('/api/status', (req, res) => {
         ip: seeedConnected ? cameras['espcam-seeed'].ip : null,
         ssid: seeedConnected ? cameras['espcam-seeed'].ssid : null
       },
-      'waveshare-esp32': {
-        connected: waveshareConnected,
-        ip: waveshareConnected ? cameras['waveshare-esp32'].ip : null,
-        ssid: waveshareConnected ? cameras['waveshare-esp32'].ssid : null,
-        sensors: waveshareConnected ? cameras['waveshare-esp32'].sensors : null
+      'maker-esp32': {
+        connected: makerConnected,
+        ip: makerConnected ? cameras['maker-esp32'].ip : null,
+        ssid: makerConnected ? cameras['maker-esp32'].ssid : null,
+        sensors: makerConnected ? cameras['maker-esp32'].sensors : null
       }
     }
   });
@@ -318,10 +318,10 @@ app.get('/api/drive', (req, res) => {
     return res.status(403).send('Not on verified safe network');
   }
 
-  const cam = cameras['waveshare-esp32'];
+  const cam = cameras['maker-esp32'];
   const cameraConnected = (Date.now() - cam.lastSeen) < 6000;
   if (!cameraConnected || !cam.ip) {
-    return res.status(503).send('Waveshare disconnected');
+    return res.status(503).send('ESP Maker Board disconnected');
   }
 
   const { x, y } = req.query;
@@ -329,14 +329,69 @@ app.get('/api/drive', (req, res) => {
     return res.status(400).send('Missing parameters');
   }
 
-  const espUrl = `http://${cam.ip}/drive?x=${x}&y=${y}`;
+  const espUrl = `http://${cam.ip}/api/drive?x=${x}&y=${y}`;
   forwardGetRequest({
     clientReq: req,
     url: espUrl,
     res,
     successMsg: 'Drive command forwarded',
     errorLogPrefix: 'Drive proxy error',
-    errorResponseMsg: 'Bad gateway connection to waveshare'
+    errorResponseMsg: 'Bad gateway connection to ESP Maker Board'
+  });
+});
+
+// Proxy route for Stop: /api/stop
+app.get('/api/stop', (req, res) => {
+  if (!isHostSecure) {
+    return res.status(403).send('Not on verified safe network');
+  }
+
+  const cam = cameras['maker-esp32'];
+  const cameraConnected = (Date.now() - cam.lastSeen) < 6000;
+  if (!cameraConnected || !cam.ip) {
+    return res.status(503).send('ESP Maker Board disconnected');
+  }
+
+  const espUrl = `http://${cam.ip}/api/stop`;
+  forwardGetRequest({
+    clientReq: req,
+    url: espUrl,
+    res,
+    successMsg: 'Stop command forwarded',
+    errorLogPrefix: 'Stop proxy error',
+    errorResponseMsg: 'Bad gateway connection to ESP Maker Board'
+  });
+});
+
+// Proxy route for timed motor test: /api/test_motor
+app.get('/api/test_motor', (req, res) => {
+  if (!isHostSecure) {
+    return res.status(403).send('Not on verified safe network');
+  }
+
+  const cam = cameras['maker-esp32'];
+  const cameraConnected = (Date.now() - cam.lastSeen) < 6000;
+  if (!cameraConnected || !cam.ip) {
+    return res.status(503).send('ESP Maker Board disconnected');
+  }
+
+  const { motor, dir, pwm, duration } = req.query;
+  if (!motor || !dir || pwm === undefined || duration === undefined) {
+    return res.status(400).send('Missing parameters');
+  }
+
+  // Safety checks in server proxy as well: Cap PWM at 80 for Maker Board, duration at 1500
+  const checkPWM = Math.min(80, Math.max(0, parseInt(pwm)));
+  const checkDuration = Math.min(1500, Math.max(0, parseInt(duration)));
+
+  const espUrl = `http://${cam.ip}/api/test_motor?motor=${motor}&dir=${dir}&pwm=${checkPWM}&duration=${checkDuration}`;
+  forwardGetRequest({
+    clientReq: req,
+    url: espUrl,
+    res,
+    successMsg: 'Test motor command forwarded',
+    errorLogPrefix: 'Test motor proxy error',
+    errorResponseMsg: 'Bad gateway connection to ESP Maker Board'
   });
 });
 
@@ -346,10 +401,10 @@ app.get('/api/speed', (req, res) => {
     return res.status(403).send('Not on verified safe network');
   }
 
-  const cam = cameras['waveshare-esp32'];
+  const cam = cameras['maker-esp32'];
   const cameraConnected = (Date.now() - cam.lastSeen) < 6000;
   if (!cameraConnected || !cam.ip) {
-    return res.status(503).send('Waveshare disconnected');
+    return res.status(503).send('ESP Maker Board disconnected');
   }
 
   const { val } = req.query;
@@ -357,27 +412,27 @@ app.get('/api/speed', (req, res) => {
     return res.status(400).send('Missing parameters');
   }
 
-  const espUrl = `http://${cam.ip}/speed?val=${val}`;
+  const espUrl = `http://${cam.ip}/api/speed?val=${val}`;
   forwardGetRequest({
     clientReq: req,
     url: espUrl,
     res,
     successMsg: 'Speed command forwarded',
     errorLogPrefix: 'Speed proxy error',
-    errorResponseMsg: 'Bad gateway connection to waveshare'
+    errorResponseMsg: 'Bad gateway connection to ESP Maker Board'
   });
 });
 
-// Proxy route for set_pwm: /api/set_pwm?motor=left|right&val=VAL
+// Proxy route for set_pwm: /api/set_pwm?motor=left|right&val=VAL (forwarding to Maker motor route)
 app.get('/api/set_pwm', (req, res) => {
   if (!isHostSecure) {
     return res.status(403).send('Not on verified safe network');
   }
 
-  const cam = cameras['waveshare-esp32'];
+  const cam = cameras['maker-esp32'];
   const cameraConnected = (Date.now() - cam.lastSeen) < 6000;
   if (!cameraConnected || !cam.ip) {
-    return res.status(503).send('Waveshare disconnected');
+    return res.status(503).send('ESP Maker Board disconnected');
   }
 
   const { motor, val } = req.query;
@@ -385,27 +440,29 @@ app.get('/api/set_pwm', (req, res) => {
     return res.status(400).send('Missing parameters');
   }
 
-  const espUrl = `http://${cam.ip}/set_pwm?motor=${motor}&val=${val}`;
+  // Left = motor index 0, Right = motor index 1
+  const motorIndex = motor === 'left' ? 0 : 1;
+  const espUrl = `http://${cam.ip}/api/motor?index=${motorIndex}&speed=${val}`;
   forwardGetRequest({
     clientReq: req,
     url: espUrl,
     res,
     successMsg: 'Set PWM command forwarded',
     errorLogPrefix: 'Set PWM proxy error',
-    errorResponseMsg: 'Bad gateway connection to waveshare'
+    errorResponseMsg: 'Bad gateway connection to ESP Maker Board'
   });
 });
 
-// Proxy route for save calibration: /api/save?left=L&right=R
+// Proxy route for save calibration: /api/save?left=L&right=R (noop or forward to stop for Maker Board)
 app.get('/api/save', (req, res) => {
   if (!isHostSecure) {
     return res.status(403).send('Not on verified safe network');
   }
 
-  const cam = cameras['waveshare-esp32'];
+  const cam = cameras['maker-esp32'];
   const cameraConnected = (Date.now() - cam.lastSeen) < 6000;
   if (!cameraConnected || !cam.ip) {
-    return res.status(503).send('Waveshare disconnected');
+    return res.status(503).send('ESP Maker Board disconnected');
   }
 
   const { left, right } = req.query;
@@ -413,14 +470,67 @@ app.get('/api/save', (req, res) => {
     return res.status(400).send('Missing parameters');
   }
 
-  const espUrl = `http://${cam.ip}/save?left=${left}&right=${right}`;
+  const espUrl = `http://${cam.ip}/api/stop`;
   forwardGetRequest({
     clientReq: req,
     url: espUrl,
     res,
-    successMsg: 'Save calibration command forwarded',
-    errorLogPrefix: 'Save calibration proxy error',
-    errorResponseMsg: 'Bad gateway connection to waveshare'
+    successMsg: 'Save command forwarded',
+    errorLogPrefix: 'Save proxy error',
+    errorResponseMsg: 'Bad gateway connection to ESP Maker Board'
+  });
+});
+
+// Proxy route for set_led: /api/led?index=X&r=R&g=G&b=B (or hex=HEX)
+app.get('/api/led', (req, res) => {
+  if (!isHostSecure) {
+    return res.status(403).send('Not on verified safe network');
+  }
+
+  const cam = cameras['maker-esp32'];
+  const cameraConnected = (Date.now() - cam.lastSeen) < 6000;
+  if (!cameraConnected || !cam.ip) {
+    return res.status(503).send('ESP Maker Board disconnected');
+  }
+
+  let queryParams = [];
+  if (req.query.index !== undefined) queryParams.push(`index=${req.query.index}`);
+  if (req.query.hex !== undefined) queryParams.push(`hex=${req.query.hex}`);
+  if (req.query.r !== undefined) queryParams.push(`r=${req.query.r}`);
+  if (req.query.g !== undefined) queryParams.push(`g=${req.query.g}`);
+  if (req.query.b !== undefined) queryParams.push(`b=${req.query.b}`);
+
+  const espUrl = `http://${cam.ip}/api/led?${queryParams.join('&')}`;
+  forwardGetRequest({
+    clientReq: req,
+    url: espUrl,
+    res,
+    successMsg: 'LED command forwarded',
+    errorLogPrefix: 'LED proxy error',
+    errorResponseMsg: 'Bad gateway connection to ESP Maker Board'
+  });
+});
+
+// Proxy route for set_leds: /api/leds?colors=C1,C2,C3,C4
+app.get('/api/leds', (req, res) => {
+  if (!isHostSecure) {
+    return res.status(403).send('Not on verified safe network');
+  }
+
+  const cam = cameras['maker-esp32'];
+  const cameraConnected = (Date.now() - cam.lastSeen) < 6000;
+  if (!cameraConnected || !cam.ip) {
+    return res.status(503).send('ESP Maker Board disconnected');
+  }
+
+  const espUrl = `http://${cam.ip}/api/leds?colors=${req.query.colors}`;
+  forwardGetRequest({
+    clientReq: req,
+    url: espUrl,
+    res,
+    successMsg: 'LEDs command forwarded',
+    errorLogPrefix: 'LEDs proxy error',
+    errorResponseMsg: 'Bad gateway connection to ESP Maker Board'
   });
 });
 

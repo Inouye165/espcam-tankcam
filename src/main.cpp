@@ -2,16 +2,11 @@
 #include <WiFiUdp.h>
 #include "esp_http_server.h"
 
-#ifdef BOARD_WAVESHARE_ESP32
-#include "soc/soc.h"
-#include "soc/rtc_cntl_reg.h"
-#endif
-
 #ifndef DEVICE_NAME
 #define DEVICE_NAME "esp32cam"
 #endif
 
-// Dynamically configuration based on board type
+// Dynamic configuration based on board type
 #if defined(ARDUINO_XIAO_ESP32S3)
 // Seeed Studio XIAO ESP32S3 Sense Pin Definitions
 #include "esp_camera.h"
@@ -42,59 +37,6 @@
 #define MOCK_CAMERA       1
 #define FLASH_GPIO_NUM    -1
 #define FLASH_ACTIVE_LOW  false
-
-#elif defined(BOARD_WAVESHARE_ESP32)
-// Waveshare ESP32 General Driver Board
-#define BOARD_NAME "WAVESHARE_ESP32"
-#define MOCK_CAMERA       1
-#define FLASH_GPIO_NUM    -1
-#define FLASH_ACTIVE_LOW  false
-#include <Wire.h>
-#include <Adafruit_INA219.h>
-#include <QMI8658.h>
-#include <Preferences.h>
-
-// L298N TB6612FNG Motor Driver Pins on Waveshare Board
-const int ENA_PIN = 25;  // Speed control (PWM) - PWMA
-const int IN1_PIN = 21;  // Direction 1 - AIN1
-const int IN2_PIN = 17;  // Direction 2 - AIN2
-
-const int ENB_PIN = 26;  // Speed control (PWM) - PWMB
-const int IN3_PIN = 22;  // Direction 1 - BIN1
-const int IN4_PIN = 23;  // Direction 2 - BIN2
-
-// PWM Constants
-const int PWM_FREQ = 500;
-const int PWM_RESOLUTION = 8;
-const int LEFT_PWM_CHANNEL = 0;
-const int RIGHT_PWM_CHANNEL = 1;
-
-// NVS Preferences for Calibration Storage
-Preferences prefs;
-int minLeftPWM = 0;
-int minRightPWM = 0;
-
-// Global Control State
-int motorSpeed = 255;            // Speed limit (80-255)
-float currentX = 0.0f;           // Proportional rotation input [-1.0, 1.0]
-float currentY = 0.0f;           // Proportional translation input [-1.0, 1.0]
-unsigned long lastDriveCmdTime = 0; // Timestamp of the last drive command (Watchdog)
-bool motorsActive = false;       // Tracks whether the motors are currently active
-
-// LEDC PWM Macros
-#if ESP_ARDUINO_VERSION >= ESP_ARDUINO_VERSION_VAL(3, 0, 0)
-  #define setupPWM(pin, freq, res, chan) ledcAttachChannel(pin, freq, res, chan)
-  #define writePWM(pin, chan, val)       ledcWrite(pin, val)
-#else
-  #define setupPWM(pin, freq, res, chan) { ledcSetup(chan, freq, res); ledcAttachPin(pin, chan); }
-  #define writePWM(pin, chan, val)       ledcWrite(chan, val)
-#endif
-
-extern Adafruit_INA219 ina219;
-extern bool ina219_initialized;
-extern QMI8658 imu;
-extern bool imu_initialized;
-
 
 #else
 // Default AI-Thinker Camera Pin Definitions (esp32cam)
@@ -135,7 +77,6 @@ const uint8_t mock_jpg[] = {
 const size_t mock_jpg_len = sizeof(mock_jpg);
 #endif
 
-
 // Wi-Fi details
 const char* ssid1 = "Pumpkinpie";
 const char* pass1 = "dobbyaspenindy";
@@ -146,295 +87,9 @@ const char* pass2 = "sanmina-1";
 WiFiUDP udp;
 const int udpPort = 3000;
 unsigned long lastBeaconTime = 0;
-#ifdef BOARD_WAVESHARE_ESP32
-const unsigned long beaconInterval = 50; // 50ms (20 Hz) for real-time tracking
-#else
 const unsigned long beaconInterval = 2000; // 2 seconds
-#endif
-
 
 httpd_handle_t stream_httpd = NULL;
-
-#ifdef BOARD_WAVESHARE_ESP32
-Adafruit_INA219 ina219(0x42);
-bool ina219_initialized = false;
-QMI8658 imu;
-bool imu_initialized = false;
-
-// AK09918 Magnetometer
-bool ak09918_initialized = false;
-
-bool writeAKRegister(uint8_t reg, uint8_t val) {
-  Wire.beginTransmission(0x0C);
-  Wire.write(reg);
-  Wire.write(val);
-  return Wire.endTransmission() == 0;
-}
-
-bool readAKRegisters(uint8_t reg, uint8_t* buf, uint8_t len) {
-  Wire.beginTransmission(0x0C);
-  Wire.write(reg);
-  if (Wire.endTransmission() != 0) return false;
-  
-  uint8_t rx = Wire.requestFrom((uint8_t)0x0C, len);
-  if (rx != len) return false;
-  for (uint8_t i = 0; i < len; i++) {
-    buf[i] = Wire.read();
-  }
-  return true;
-}
-
-bool initAK09918() {
-  uint8_t wia2 = 0;
-  if (!readAKRegisters(0x01, &wia2, 1) || wia2 != 0x0C) {
-    Serial.println("AK09918 magnetometer not found at I2C address 0x0C.");
-    return false;
-  }
-  if (!writeAKRegister(0x32, 0x01)) return false; // soft reset
-  delay(10);
-  if (!writeAKRegister(0x31, 0x04)) return false; // Continuous measurement mode 2 (20Hz)
-  Serial.println("AK09918 magnetometer initialized successfully.");
-  return true;
-}
-
-bool readAK09918(float &mx, float &my, float &mz) {
-  uint8_t st1 = 0;
-  if (!readAKRegisters(0x10, &st1, 1)) return false;
-  if (!(st1 & 0x01)) return false; // data not ready
-  
-  uint8_t buf[8];
-  if (!readAKRegisters(0x11, buf, 8)) return false;
-  
-  int16_t raw_x = (int16_t)((uint16_t)buf[1] << 8 | buf[0]);
-  int16_t raw_y = (int16_t)((uint16_t)buf[3] << 8 | buf[2]);
-  int16_t raw_z = (int16_t)((uint16_t)buf[5] << 8 | buf[4]);
-  
-  uint8_t st2 = buf[7];
-  if (st2 & 0x08) return false; // overflow
-  
-  mx = raw_x * 0.15f;
-  my = raw_y * 0.15f;
-  mz = raw_z * 0.15f;
-  return true;
-}
-
-void loadPreferences() {
-  prefs.begin("calibration", true); // read-only mode
-  minLeftPWM = prefs.getInt("leftMin", 0);
-  minRightPWM = prefs.getInt("rightMin", 0);
-  prefs.end();
-  Serial.printf("Preferences loaded: Left Min=%d, Right Min=%d\n", minLeftPWM, minRightPWM);
-}
-
-void savePreferences(int left, int right) {
-  prefs.begin("calibration", false); // read-write mode
-  prefs.putInt("leftMin", left);
-  prefs.putInt("rightMin", right);
-  prefs.end();
-  minLeftPWM = left;
-  minRightPWM = right;
-  Serial.printf("Preferences saved: Left Min=%d, Right Min=%d\n", minLeftPWM, minRightPWM);
-}
-
-void stopMotors() {
-  currentX = 0.0f;
-  currentY = 0.0f;
-  motorsActive = false;
-  digitalWrite(IN1_PIN, LOW);
-  digitalWrite(IN2_PIN, LOW);
-  writePWM(ENA_PIN, LEFT_PWM_CHANNEL, 0);
-
-  digitalWrite(IN3_PIN, LOW);
-  digitalWrite(IN4_PIN, LOW);
-  writePWM(ENB_PIN, RIGHT_PWM_CHANNEL, 0);
-  Serial.println("Motors stopped.");
-}
-
-void updateMotorOutputs() {
-  float leftPower = currentY + currentX;
-  float rightPower = currentY - currentX;
-
-  leftPower = constrain(leftPower, -1.0f, 1.0f);
-  rightPower = constrain(rightPower, -1.0f, 1.0f);
-
-  if (abs(leftPower) > 0.01f || abs(rightPower) > 0.01f) {
-    motorsActive = true;
-  } else {
-    motorsActive = false;
-  }
-
-  if (abs(leftPower) > 0.01f) {
-    int leftPWM = minLeftPWM + (int)(abs(leftPower) * (motorSpeed - minLeftPWM));
-    leftPWM = constrain(leftPWM, minLeftPWM, motorSpeed);
-    
-    if (leftPower > 0.01f) {
-      digitalWrite(IN1_PIN, HIGH);
-      digitalWrite(IN2_PIN, LOW);
-    } else {
-      digitalWrite(IN1_PIN, LOW);
-      digitalWrite(IN2_PIN, HIGH);
-    }
-    writePWM(ENA_PIN, LEFT_PWM_CHANNEL, leftPWM);
-  } else {
-    digitalWrite(IN1_PIN, LOW);
-    digitalWrite(IN2_PIN, LOW);
-    writePWM(ENA_PIN, LEFT_PWM_CHANNEL, 0);
-  }
-
-  if (abs(rightPower) > 0.01f) {
-    int rightPWM = minRightPWM + (int)(abs(rightPower) * (motorSpeed - minRightPWM));
-    rightPWM = constrain(rightPWM, minRightPWM, motorSpeed);
-    
-    if (rightPower > 0.01f) {
-      digitalWrite(IN3_PIN, HIGH);
-      digitalWrite(IN4_PIN, LOW);
-    } else {
-      digitalWrite(IN3_PIN, LOW);
-      digitalWrite(IN4_PIN, HIGH);
-    }
-    writePWM(ENB_PIN, RIGHT_PWM_CHANNEL, rightPWM);
-  } else {
-    digitalWrite(IN3_PIN, LOW);
-    digitalWrite(IN4_PIN, LOW);
-    writePWM(ENB_PIN, RIGHT_PWM_CHANNEL, 0);
-  }
-}
-
-// Helper query param parser
-bool get_query_param(httpd_req_t *req, const char *param, char *value, size_t val_len) {
-  char* buf;
-  size_t buf_len;
-  bool found = false;
-
-  buf_len = httpd_req_get_url_query_len(req) + 1;
-  if (buf_len > 1) {
-    buf = (char*)malloc(buf_len);
-    if (buf) {
-      if (httpd_req_get_url_query_str(req, buf, buf_len) == ESP_OK) {
-        if (httpd_query_key_value(buf, param, value, val_len) == ESP_OK) {
-          found = true;
-        }
-      }
-      free(buf);
-    }
-  }
-  return found;
-}
-
-// HTTP Handler for Drive: /drive?x=X&y=Y
-esp_err_t drive_handler(httpd_req_t *req) {
-  char x_str[16] = {0,};
-  char y_str[16] = {0,};
-
-  bool has_x = get_query_param(req, "x", x_str, sizeof(x_str));
-  bool has_y = get_query_param(req, "y", y_str, sizeof(y_str));
-
-  if (has_x && has_y) {
-    lastDriveCmdTime = millis();
-    currentX = atof(x_str);
-    currentY = atof(y_str);
-    currentX = constrain(currentX, -1.0f, 1.0f);
-    currentY = constrain(currentY, -1.0f, 1.0f);
-    updateMotorOutputs();
-    httpd_resp_set_hdr(req, "Access-Control-Allow-Origin", "*");
-    httpd_resp_send(req, "OK", 2);
-    return ESP_OK;
-  }
-
-  httpd_resp_send_err(req, HTTPD_400_BAD_REQUEST, "Missing x or y");
-  return ESP_FAIL;
-}
-
-// HTTP Handler for Speed Limit: /speed?val=VAL
-esp_err_t speed_handler(httpd_req_t *req) {
-  char val_str[16] = {0,};
-  if (get_query_param(req, "val", val_str, sizeof(val_str))) {
-    lastDriveCmdTime = millis();
-    int val = atoi(val_str);
-    motorSpeed = constrain(val, 80, 255);
-    updateMotorOutputs();
-    httpd_resp_set_hdr(req, "Access-Control-Allow-Origin", "*");
-    httpd_resp_send(req, "OK", 2);
-    return ESP_OK;
-  }
-
-  httpd_resp_send_err(req, HTTPD_400_BAD_REQUEST, "Missing val");
-  return ESP_FAIL;
-}
-
-// HTTP Handler for set_pwm (tuning): /set_pwm?motor=left|right&val=VAL
-esp_err_t set_pwm_handler(httpd_req_t *req) {
-  char motor_str[16] = {0,};
-  char val_str[16] = {0,};
-
-  bool has_motor = get_query_param(req, "motor", motor_str, sizeof(motor_str));
-  bool has_val = get_query_param(req, "val", val_str, sizeof(val_str));
-
-  if (has_motor && has_val) {
-    lastDriveCmdTime = millis();
-    int val = atoi(val_str);
-    val = constrain(val, 0, 255);
-    if (val > 0) {
-      motorsActive = true;
-    }
-    
-    if (strcmp(motor_str, "left") == 0) {
-      if (val > 0) {
-        digitalWrite(IN1_PIN, HIGH);
-        digitalWrite(IN2_PIN, LOW);
-      } else {
-        digitalWrite(IN1_PIN, LOW);
-        digitalWrite(IN2_PIN, LOW);
-      }
-      writePWM(ENA_PIN, LEFT_PWM_CHANNEL, val);
-    } else if (strcmp(motor_str, "right") == 0) {
-      if (val > 0) {
-        digitalWrite(IN3_PIN, HIGH);
-        digitalWrite(IN4_PIN, LOW);
-      } else {
-        digitalWrite(IN3_PIN, LOW);
-        digitalWrite(IN4_PIN, LOW);
-      }
-      writePWM(ENB_PIN, RIGHT_PWM_CHANNEL, val);
-    }
-    
-    httpd_resp_set_hdr(req, "Access-Control-Allow-Origin", "*");
-    httpd_resp_send(req, "OK", 2);
-    return ESP_OK;
-  }
-
-  httpd_resp_send_err(req, HTTPD_400_BAD_REQUEST, "Missing parameters");
-  return ESP_FAIL;
-}
-
-// HTTP Handler for Save calibration: /save?left=L&right=R
-esp_err_t save_handler(httpd_req_t *req) {
-  char left_str[16] = {0,};
-  char right_str[16] = {0,};
-
-  bool has_left = get_query_param(req, "left", left_str, sizeof(left_str));
-  bool has_right = get_query_param(req, "right", right_str, sizeof(right_str));
-
-  if (has_left && has_right) {
-    int leftVal = atoi(left_str);
-    int rightVal = atoi(right_str);
-    leftVal = constrain(leftVal, 0, 255);
-    rightVal = constrain(rightVal, 0, 255);
-
-    savePreferences(leftVal, rightVal);
-    stopMotors();
-
-    httpd_resp_set_hdr(req, "Access-Control-Allow-Origin", "*");
-    httpd_resp_send(req, "OK", 2);
-    return ESP_OK;
-  }
-
-  httpd_resp_send_err(req, HTTPD_400_BAD_REQUEST, "Missing parameters");
-  return ESP_FAIL;
-}
-#endif
-
-
 
 #define PART_BOUNDARY "123456789000000000000987654321"
 static const char* _STREAM_CONTENT_TYPE = "multipart/x-mixed-replace;boundary=" PART_BOUNDARY;
@@ -451,7 +106,7 @@ bool isNetworkVerified() {
 esp_err_t stream_handler(httpd_req_t *req) {
 #ifdef MOCK_CAMERA
   esp_err_t res = ESP_OK;
-  char * part_buf[64];
+  char part_buf[64];
 
   if (!isNetworkVerified()) {
     Serial.println("Security alert: Stream request rejected on unverified network!");
@@ -501,7 +156,7 @@ esp_err_t stream_handler(httpd_req_t *req) {
   esp_err_t res = ESP_OK;
   size_t _jpg_buf_len = 0;
   uint8_t * _jpg_buf = NULL;
-  char * part_buf[64];
+  char part_buf[64];
 
   if (!isNetworkVerified()) {
     Serial.println("Security alert: Stream request rejected on unverified network!");
@@ -630,60 +285,17 @@ void startCameraServer() {
     .user_ctx  = NULL
   };
 
-#ifdef BOARD_WAVESHARE_ESP32
-  httpd_uri_t drive_uri = {
-    .uri       = "/drive",
-    .method    = HTTP_GET,
-    .handler   = drive_handler,
-    .user_ctx  = NULL
-  };
-
-  httpd_uri_t speed_uri = {
-    .uri       = "/speed",
-    .method    = HTTP_GET,
-    .handler   = speed_handler,
-    .user_ctx  = NULL
-  };
-
-  httpd_uri_t set_pwm_uri = {
-    .uri       = "/set_pwm",
-    .method    = HTTP_GET,
-    .handler   = set_pwm_handler,
-    .user_ctx  = NULL
-  };
-
-  httpd_uri_t save_uri = {
-    .uri       = "/save",
-    .method    = HTTP_GET,
-    .handler   = save_handler,
-    .user_ctx  = NULL
-  };
-#endif
-
   Serial.printf("Starting stream server on port: '%d'\n", config.server_port);
   if (httpd_start(&stream_httpd, &config) == ESP_OK) {
     httpd_register_uri_handler(stream_httpd, &stream_uri);
     httpd_register_uri_handler(stream_httpd, &control_uri);
-#ifdef BOARD_WAVESHARE_ESP32
-    httpd_register_uri_handler(stream_httpd, &drive_uri);
-    httpd_register_uri_handler(stream_httpd, &speed_uri);
-    httpd_register_uri_handler(stream_httpd, &set_pwm_uri);
-    httpd_register_uri_handler(stream_httpd, &save_uri);
-#endif
   }
 }
 
 void connectToWifi() {
   WiFi.mode(WIFI_STA); // Explicitly set to station mode to disable SoftAP SSID broadcast
-#ifdef BOARD_WAVESHARE_ESP32
-  // Limit Wi-Fi TX power to prevent huge current spikes that drop voltage and brownout the board
-  WiFi.setTxPower(WIFI_POWER_8_5dBm);
-#endif
   Serial.println("Attempting connection to WiFi network 1: Pumpkinpie");
   WiFi.begin(ssid1, pass1);
-#ifdef BOARD_WAVESHARE_ESP32
-  WiFi.setTxPower(WIFI_POWER_8_5dBm);
-#endif
   
   int counter = 0;
   while (WiFi.status() != WL_CONNECTED && counter < 20) {
@@ -703,9 +315,6 @@ void connectToWifi() {
   Serial.println("Failed to connect to Pumpkinpie. Attempting connection to fallback network: Dobby");
   WiFi.disconnect();
   WiFi.begin(ssid2, pass2);
-#ifdef BOARD_WAVESHARE_ESP32
-  WiFi.setTxPower(WIFI_POWER_8_5dBm);
-#endif
 
   counter = 0;
   while (WiFi.status() != WL_CONNECTED && counter < 20) {
@@ -725,61 +334,32 @@ void connectToWifi() {
 }
 
 void setup() {
-#ifdef BOARD_WAVESHARE_ESP32
-  // Disable brownout detector to prevent reset on motor startup current dip
-  WRITE_PERI_REG(RTC_CNTL_BROWN_OUT_REG, 0);
-#endif
-
   Serial.begin(115200);
   Serial.setDebugOutput(true);
   Serial.println();
+
+  // Print reset reason at startup to detect brownouts or noise issues
+  esp_reset_reason_t reason = esp_reset_reason();
+  Serial.print("Boot Reset Reason: ");
+  switch (reason) {
+    case ESP_RST_POWERON:   Serial.println("Power-on reset"); break;
+    case ESP_RST_EXT:       Serial.println("External pin reset"); break;
+    case ESP_RST_SW:        Serial.println("Software reset via esp_restart"); break;
+    case ESP_RST_PANIC:     Serial.println("Software reset due to exception/panic"); break;
+    case ESP_RST_INT_WDT:   Serial.println("Interrupt watchdog reset"); break;
+    case ESP_RST_TASK_WDT:  Serial.println("Task watchdog reset"); break;
+    case ESP_RST_WDT:       Serial.println("Other watchdog reset"); break;
+    case ESP_RST_DEEPSLEEP: Serial.println("Wakeup from deep sleep"); break;
+    case ESP_RST_BROWNOUT:  Serial.println("BROWNOUT - Brownout reset (voltage dip)"); break;
+    case ESP_RST_SDIO:      Serial.println("Reset over SDIO"); break;
+    default:                Serial.println("Unknown"); break;
+  }
 
   // Initialize Flash LED GPIO pin
   if (FLASH_GPIO_NUM != -1) {
     pinMode(FLASH_GPIO_NUM, OUTPUT);
     digitalWrite(FLASH_GPIO_NUM, FLASH_ACTIVE_LOW ? HIGH : LOW); // Default to OFF
   }
-
-#ifdef BOARD_WAVESHARE_ESP32
-  Wire.begin(32, 33);
-  if (ina219.begin()) {
-    ina219_initialized = true;
-    Serial.println("INA219 initialized successfully on Waveshare board.");
-  } else {
-    Serial.println("Warning: INA219 initialization failed on Waveshare board. Falling back to mock telemetry.");
-  }
-
-  if (imu.begin(Wire, 0x6A)) {
-    imu_initialized = true;
-    Serial.println("QMI8658 IMU initialized successfully (address 0x6A).");
-  } else if (imu.begin(Wire, 0x6B)) {
-    imu_initialized = true;
-    Serial.println("QMI8658 IMU initialized successfully (address 0x6B).");
-  } else {
-    Serial.println("Warning: QMI8658 IMU initialization failed. Falling back to mock IMU telemetry.");
-  }
-
-  // Initialize AK09918 magnetometer
-  ak09918_initialized = initAK09918();
-
-  // Configure L298N TB6612FNG motor pins
-  pinMode(IN1_PIN, OUTPUT);
-  pinMode(IN2_PIN, OUTPUT);
-  pinMode(IN3_PIN, OUTPUT);
-  pinMode(IN4_PIN, OUTPUT);
-
-  // Configure PWM
-  setupPWM(ENA_PIN, PWM_FREQ, PWM_RESOLUTION, LEFT_PWM_CHANNEL);
-  setupPWM(ENB_PIN, PWM_FREQ, PWM_RESOLUTION, RIGHT_PWM_CHANNEL);
-  
-  // Load calibrations
-  loadPreferences();
-  
-  // Ensure motors are stopped initially
-  stopMotors();
-#endif
-
-
 
 #ifndef MOCK_CAMERA
   // Camera Config
@@ -849,26 +429,12 @@ void setup() {
 void loop() {
   // Reconnect Wi-Fi if dropped
   if (WiFi.status() != WL_CONNECTED) {
-#ifdef BOARD_WAVESHARE_ESP32
-    if (motorsActive) {
-      Serial.println("Wi-Fi connection lost! Safety stopping motors.");
-      stopMotors();
-    }
-#endif
     Serial.println("Wi-Fi connection lost! Attempting to reconnect...");
     connectToWifi();
     if (WiFi.status() == WL_CONNECTED && stream_httpd == NULL) {
       startCameraServer();
     }
   }
-
-#ifdef BOARD_WAVESHARE_ESP32
-  // Motor watchdog safety check
-  if (motorsActive && (millis() - lastDriveCmdTime > 1000)) {
-    Serial.println("Watchdog: No drive command received for 1000ms. Safety stopping motors.");
-    stopMotors();
-  }
-#endif
 
   // Periodic UDP broadcast beacon
   if (WiFi.status() == WL_CONNECTED && isNetworkVerified()) {
@@ -878,60 +444,7 @@ void loop() {
 
       IPAddress ip = WiFi.localIP();
       String deviceName = String(DEVICE_NAME);
-      String beaconMsg;
-
-#ifdef BOARD_WAVESHARE_ESP32
-      float voltage = 0.0;
-      float current = 0.0;
-      float power = 0.0;
-      float temp = 0.0;
-      float ax = 0.0, ay = 0.0, az = 9.8;
-      float gx = 0.0, gy = 0.0, gz = 0.0;
-
-      if (ina219_initialized) {
-        voltage = ina219.getBusVoltage_V();
-        current = ina219.getCurrent_mA();
-        power = voltage * current; // mW
-      } else {
-        // Fallback simulated sensor telemetry
-        voltage = 11.5 + (random(0, 100) / 100.0);
-        current = 100.0 + (random(0, 1000) / 10.0);
-        power = voltage * current;
-      }
-      temp = 28.0 + (random(0, 100) / 10.0);
-
-      float mx = 0.0, my = 0.0, mz = 0.0;
-
-      if (imu_initialized) {
-        imu.readAccel(ax, ay, az);
-        imu.readGyro(gx, gy, gz);
-      } else {
-        // Mock shifting angles using sine waves
-        unsigned long t = millis();
-        ax = sin(t / 1000.0) * 200.0; // accel range -200 to 200 mg
-        ay = cos(t / 1500.0) * 200.0;
-        az = 1000.0 + sin(t / 2000.0) * 50.0; // gravity component at ~1000 mg
-        gx = sin(t / 1000.0) * 10.0; // gyro range -10 to 10 dps
-        gy = cos(t / 1500.0) * 10.0;
-        gz = sin(t / 2500.0) * 5.0;
-      }
-
-      if (ak09918_initialized && readAK09918(mx, my, mz)) {
-        // Magnetometer read succeeded
-      } else {
-        // Mock magnetometer values shifting slowly relative to simulated rotation
-        unsigned long t = millis();
-        float mockHeadingRad = (t / 2500.0); // full rotation every ~15 seconds
-        mx = cos(mockHeadingRad) * 30.0; // typical field strength around 30-50 uT
-        my = sin(mockHeadingRad) * 30.0;
-        mz = -45.0; // vertical component
-      }
-
-      beaconMsg = "{\"device\":\"" + deviceName + "\",\"ip\":\"" + ip.toString() + "\",\"ssid\":\"" + WiFi.SSID() + "\",\"sensors\":{\"voltage\":" + String(voltage, 2) + ",\"current\":" + String(current, 1) + ",\"power\":" + String(power, 1) + ",\"temp\":" + String(temp, 1) + ",\"accel\":{\"x\":" + String(ax, 2) + ",\"y\":" + String(ay, 2) + ",\"z\":" + String(az, 2) + "},\"gyro\":{\"x\":" + String(gx, 2) + ",\"y\":" + String(gy, 2) + ",\"z\":" + String(gz, 2) + "},\"mag\":{\"x\":" + String(mx, 2) + ",\"y\":" + String(my, 2) + ",\"z\":" + String(mz, 2) + "},\"calibration\":{\"left\":" + String(minLeftPWM) + ",\"right\":" + String(minRightPWM) + "}}}";
-
-#else
-      beaconMsg = "{\"device\":\"" + deviceName + "\",\"ip\":\"" + ip.toString() + "\",\"ssid\":\"" + WiFi.SSID() + "\"}";
-#endif
+      String beaconMsg = "{\"device\":\"" + deviceName + "\",\"ip\":\"" + ip.toString() + "\",\"ssid\":\"" + WiFi.SSID() + "\"}";
       
       IPAddress broadcastIP(255, 255, 255, 255);
       udp.beginPacket(broadcastIP, udpPort);
@@ -939,7 +452,6 @@ void loop() {
       udp.endPacket();
     }
   }
-
 
   delay(10);
 }
