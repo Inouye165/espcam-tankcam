@@ -14,7 +14,7 @@ The workspace includes embedded C++ firmware (PlatformIO), a local Node.js relay
 ```mermaid
 graph TD
     ESP_CAM["ESP32-CAM (esp32cam)"] -- "UDP Beacon (Port 3000)" --> Node["Node.js Backend (Port 5000)"]
-    ESP_MAKER["ESP Maker (maker-esp32)"] -- "UDP Beacon (Port 41412)" --> Node
+    ESP_MAKER["ESP Maker (maker-esp32)"] -- "UDP Beacon (Port 3000)" --> Node
     ESP_CAM -- "MJPEG Stream (/stream)" --> Node
     Node -- "Piped Streams & Status API (/api/*)" --> React["React Frontend"]
     React -- "Safe Motor Checklist & HUD Drive" --> Node
@@ -29,7 +29,7 @@ graph TD
 ### 1. Zero-Configuration UDP Auto-Discovery
 To avoid hardcoding IP addresses across devices:
 - Camera boards (`esp32cam` / `espcam-seeed`) broadcast JSON discovery packets on UDP port `3000` every 2 seconds.
-- The **ESP Maker Board** (`maker-esp32`) broadcasts discovery beacons on UDP port `41412` every 3 seconds.
+- The **ESP Maker Board** (`maker-esp32`) broadcasts discovery beacons on UDP port `3000` every 2 seconds.
 - The Node.js server listens to these beacons, dynamically registering device IPs (`10.0.0.58`, etc.) for seamless connection.
 
 ### 2. Dual Wi-Fi Client Connection & AP Suppress
@@ -60,7 +60,7 @@ To protect the tank and motor driver circuits from high current spikes:
 
 - `espcam-tankcam/src/main.cpp`: ESP32-CAM firmware (handles stream, flash control, and UDP discovery beacons).
 - `espcam-tankcam/platformio.ini`: PlatformIO hardware definitions for camera environments.
-- `esp-maker-usba-4motor/`: Embedded firmware workspace for the main **ESP Maker Board** actuator controller.
+- `../esp-maker-usba-4motor/` (Sibling Repository: [esp-maker-usba-4motor](https://github.com/Inouye165/esp-maker-usba-4motor)): Embedded firmware workspace for the main **ESP Maker Board** actuator controller.
 - `server/`: Node.js Express proxy, UDP auto-discovery daemon, and static asset router.
 - `frontend/`: React + Vite single-page cockpit dashboard console.
 
@@ -78,12 +78,36 @@ To protect the tank and motor driver circuits from high current spikes:
    # Upload to the Seeed Studio XIAO ESP32S3 (COM18)
    pio run -e espcam-seeed --target upload
    ```
-2. Navigate to `esp-maker-usba-4motor/` and flash the ESP Maker board:
+2. Navigate to the sibling project directory `../esp-maker-usba-4motor/` and flash the ESP Maker board:
    ```bash
    pio run --target upload
    ```
 
-### B. Launching the Backend Server & Dashboard (Production Mode)
+### B. Simplified Start & Stop (Recommended)
+
+For developer convenience, you can start or stop both the backend server and frontend development server simultaneously using the provided scripts in the repository root:
+
+* **Using Windows Command Prompt / Batch file**:
+  ```cmd
+  # Start both services (spawns two separate terminal windows)
+  .\run.bat
+  
+  # Stop both services (terminates the background processes)
+  .\run.bat stop
+  ```
+
+* **Using PowerShell**:
+  ```powershell
+  # Start both services
+  .\run.ps1
+  
+  # Stop both services
+  .\run.ps1 stop
+  ```
+
+*Note: The start scripts open separate console windows labeled **Tankcam Backend** and **Tankcam Frontend** so you can easily monitor real-time outputs and logs. Closing those windows manually also terminates the respective services.*
+
+### C. Launching the Backend Server & Dashboard (Production Mode)
 
 To run the unified server that handles the camera proxies and serves the React cockpit dashboard:
 
@@ -103,7 +127,7 @@ To run the unified server that handles the camera proxies and serves the React c
    *This starts the backend server on HTTP port 5000, listens for discovery beacons, and hosts the React console UI.*
 5. **Access the Cockpit**: Open your web browser and go to: **`http://localhost:5000`**
 
-### C. Running in Development Mode (Optional)
+### D. Running in Development Mode (Optional - Manual)
 
 If you are modifying the frontend React code and want hot-reloading:
 
@@ -115,6 +139,7 @@ If you are modifying the frontend React code and want hot-reloading:
 3. **Access the Dev Console**: Open your web browser and go to: **`http://localhost:5173`** *(Vite will proxy API requests to the backend server running on port 5000)*.
 
 ---
+
 
 ## Regression Testing
 

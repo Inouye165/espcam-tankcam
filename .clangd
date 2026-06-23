@@ -1,28 +1,13 @@
 CompileFlags:
   Remove:
-    - -mfix-esp32-psram-cache-issue
-    - -mfix-esp32-psram-cache-strategy=*
     - -mlongcalls
-    - -fno-tree-switch-conversion
+    - -mdisable-hardware-atomics
     - -fstrict-volatile-bitfields
-    - -mtext-section-literals
-  Add:
-    - "-D__USER_LABEL_PREFIX__="
-    - "-D__GNUC_PREREQ(x,y)=1"
-    - "-D__XTENSA__=1"
-    - "-D__xtensa__=1"
-    - "-isystem"
-    - "C:/Users/inouy/.platformio/packages/toolchain-xtensa-esp32/xtensa-esp32-elf/include/c++/8.4.0"
-    - "-isystem"
-    - "C:/Users/inouy/.platformio/packages/toolchain-xtensa-esp32/xtensa-esp32-elf/include/c++/8.4.0/xtensa-esp32-elf"
-    - "-isystem"
-    - "C:/Users/inouy/.platformio/packages/toolchain-xtensa-esp32/xtensa-esp32-elf/include"
-    - "-isystem"
-    - "C:/Users/inouy/.platformio/packages/toolchain-xtensa-esp32/lib/gcc/xtensa-esp32-elf/8.4.0/include"
-    - "-isystem"
-    - "C:/Users/inouy/.platformio/packages/toolchain-xtensa-esp32/lib/gcc/xtensa-esp32-elf/8.4.0/include-fixed"
+    - -fno-tree-switch-conversion
 
-Diagnostics:
-  Suppress:
-    - err_asm_expected_string_literal
+QueryDriver:
+  - C:\Users\Ron\.platformio\packages\toolchain-xtensa-esp-elf\bin\xtensa-esp-elf-g++*
+  - C:\Users\Ron\.platformio\packages\toolchain-xtensa-esp-elf\bin\xtensa-esp-elf-gcc*
+  - C:\Users\Ron\.platformio\packages\toolchain-xtensa-esp32\bin\xtensa-esp32-elf-g++*
+  - C:\Users\Ron\.platformio\packages\toolchain-xtensa-esp32\bin\xtensa-esp32-elf-gcc*
 
